@@ -172,6 +172,17 @@ test("reads lists and tasks: 401 retry, 429 back-off, paging, mapping, sorting",
   assert.strictEqual(taskRequest.headers.Authorization, "Bearer AT3");
 });
 
+test("the panel keeps the lists it fetched", async () => {
+  const plugin = await signedInPlugin();
+  const lists = [{ id: "L1", name: "Inbox", tasks: [{ id: "t", title: "Task", due_date: null }] }];
+  plugin.fetchLists = async () => lists;
+  const view = global.__viewFactory({});
+  await view.refresh();
+  assert.strictEqual(view.error, null);
+  assert.deepStrictEqual(view.lists, lists);
+  assert.strictEqual(view.groups().length, 1);
+});
+
 test("auth errors are trimmed and get a setup hint", () => {
   const message = describeAuthError({
     error_description: "AADSTS50059: No tenant-identifying information found. Trace ID: abc Correlation ID: def",

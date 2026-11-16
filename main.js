@@ -281,8 +281,7 @@ class TodoPanelView extends ItemView {
     this.error = null;
     this.renderStatus();
     try {
-      const payload = await this.plugin.fetchLists();
-      this.lists = payload.data;
+      this.lists = await this.plugin.fetchLists();
       this.fetchedAt = new Date();
     } catch (e) {
       this.error = e.message;
