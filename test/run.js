@@ -183,6 +183,38 @@ test("the panel keeps the lists it fetched", async () => {
   assert.strictEqual(view.groups().length, 1);
 });
 
+test("opening the panel does not wait for tasks to load", async () => {
+  const plugin = await signedInPlugin();
+  let finishFetch;
+  plugin.fetchLists = () => new Promise((resolve) => (finishFetch = resolve));
+  const view = global.__viewFactory({});
+  // A minimal element API, enough for onOpen to build its toolbar.
+  const el = () => {
+    const node = {
+      empty() {},
+      addClass() {},
+      toggleClass() {},
+      setAttr() {},
+      setText() {},
+      addEventListener() {},
+      querySelectorAll: () => [],
+      createDiv: () => el(),
+      createEl: () => el(),
+      createSpan: () => el(),
+    };
+    return node;
+  };
+  view.app = plugin.app;
+  view.contentEl = el();
+  global.__layoutReady = null;
+  const opened = await Promise.race([view.onOpen().then(() => "opened"), new Promise((r) => setTimeout(() => r("blocked"), 50))]);
+  assert.strictEqual(opened, "opened", "onOpen returned before tasks loaded");
+  assert.ok(global.__layoutReady, "fetch deferred until the layout is ready");
+  global.__layoutReady();
+  assert.ok(view.loading, "fetch running in the background");
+  finishFetch([]);
+});
+
 test("auth errors are trimmed and get a setup hint", () => {
   const message = describeAuthError({
     error_description: "AADSTS50059: No tenant-identifying information found. Trace ID: abc Correlation ID: def",

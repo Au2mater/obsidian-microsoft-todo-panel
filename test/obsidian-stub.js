@@ -13,7 +13,12 @@ class Plugin {
         getSecret: (id) => store[id] ?? null,
         listSecrets: () => Object.keys(store),
       },
-      workspace: { on: () => ({}), getLeavesOfType: () => [], getActiveFile: () => null },
+      workspace: {
+        on: () => ({}),
+        getLeavesOfType: () => [],
+        getActiveFile: () => null,
+        onLayoutReady: (fn) => (global.__layoutReady = fn),
+      },
       vault: { on: () => ({}) },
       secrets: store,
     };

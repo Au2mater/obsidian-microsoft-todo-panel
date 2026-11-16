@@ -268,7 +268,13 @@ class TodoPanelView extends ItemView {
     this.statusEl = root.createDiv({ cls: "sb-todo-status" });
     this.listsEl = root.createDiv();
     this.renderLists();
-    await this.refresh();
+    // Fetching takes a few seconds. Obsidian waits for onOpen while it
+    // restores the workspace, so start the fetch only once the layout is ready
+    // and never wait for it here: startup and editing stay unblocked, and the
+    // panel shows "Loading tasks…" until the tasks arrive.
+    this.app.workspace.onLayoutReady(() => {
+      this.refresh();
+    });
   }
 
   async refresh() {
