@@ -326,18 +326,24 @@ test("the completed filter starts at local midnight N days ago", () => {
   assert.strictEqual(taskFilter(0), "status ne 'completed'");
 });
 
-test("clicking a task the note holds selects its line; other clicks do nothing", async () => {
+test("clicking a task the note holds selects its line; others are added below the cursor", async () => {
   const plugin = await signedInPlugin();
-  const text = ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "- [x] Book venue"];
+  let text = ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "    - [x] Book venue"];
   const calls = [];
   const editor = {
+    getValue: () => text.join("\n"),
+    getCursor: () => ({ line: 3, ch: 5 }),
+    setCursor: (pos) => calls.push(["cursor", pos]),
+    transaction({ changes }) {
+      const c = changes[0];
+      const lines = text.slice();
+      lines[c.from.line] = lines[c.from.line].slice(0, c.from.ch) + c.text + lines[c.from.line].slice(c.to.ch);
+      text = lines.join("\n").split("\n");
+    },
     getLine: (n) => text[n],
-    getCursor: () => ({ line: 1, ch: 0 }),
     setSelection: (from, to) => calls.push(["select", from, to]),
     scrollIntoView: () => calls.push(["scroll"]),
     focus: () => calls.push(["focus"]),
-    replaceRange: (value) => calls.push(["insert", value]),
-    setCursor: () => {},
   };
   // Focus is in the panel, so there is no active Markdown view: the note is
   // the one that was active last in the main area, here in reading view.
@@ -359,15 +365,14 @@ test("clicking a task the note holds selects its line; other clicks do nothing",
   plugin.app.workspace.getMostRecentLeaf = () => ({ view });
   plugin.app.workspace.setActiveLeaf = (leaf) => calls.push(["activate", leaf.id]);
   const list = { id: "L", name: "Inbox" };
-  await plugin.showInNote({ id: "1", title: "send  SLIDES", due_date: null }, list);
+  await plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
   assert.strictEqual(view.mode, "source", "switched out of reading view");
   assert.deepStrictEqual(calls[0], ["activate", "note"]);
   assert.deepStrictEqual(calls[1], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
   calls.length = 0;
-  view.mode = "preview";
-  await plugin.showInNote({ id: "2", title: "Something new", due_date: null }, list);
-  assert.deepStrictEqual(calls, [], "nothing selected, inserted or activated");
-  assert.strictEqual(view.mode, "preview", "the note stays in reading view");
+  await plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
+  assert.deepStrictEqual(text, ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "    - [x] Book venue", "    - [ ] Something new"]);
+  assert.ok(calls.some((c) => c[0] === "cursor" && c[1].line === 4), "cursor moves to the new line");
 });
 
 // A tiny editor over an array of lines, with the drop's selection.

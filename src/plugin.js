@@ -1,7 +1,8 @@
 // Microsoft To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
 // to Microsoft itself (OAuth device code flow, read-only Tasks permission) and
 // reads tasks from Microsoft Graph. Dragging a task into a note inserts it as
-// a Markdown line; clicking a task the note already holds selects that line.
+// a Markdown line; clicking a task adds it below the cursor, or selects its
+// line when the note already holds it.
 //
 // Plain JavaScript with no dependencies: `npm run build` checks this file and
 // writes it unchanged to main.js, the file Obsidian loads (see README.md).
@@ -251,24 +252,31 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return view && view.file ? { file: view.file, text: view.getViewData() } : null;
   }
 
-  // Clicking a task the note being worked in already holds selects that line
-  // and scrolls to it. Clicking any other task does nothing: tasks are added
-  // by dragging.
-  async showInNote(task, list) {
+  // Clicking a task: when the note being worked in already holds it, select
+  // that line and scroll to it; otherwise add the task on a new line below
+  // the cursor's line, indented like it.
+  async showOrInsert(task, list) {
     const view = this.noteView();
-    if (!view) return;
-    // Read the note as it is now, not as the markers last saw it.
-    const lines = noteTaskLines(view.getViewData());
-    const line = findTaskLine(lines, normalizedTitle(task), this.renderTask(task, list).trim());
-    if (line < 0) return;
-    // Selecting happens in the editor, so leave reading view.
+    if (!view) {
+      new Notice("Open a note first, then click the task.");
+      return;
+    }
+    // Selecting and inserting happen in the editor, so leave reading view.
     if (view.getMode() === "preview") await view.setState({ ...view.getState(), mode: "source" }, { history: false });
     this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
     const editor = view.editor;
-    const from = { line, ch: 0 };
-    const to = { line, ch: editor.getLine(line).length };
-    editor.setSelection(from, to);
-    editor.scrollIntoView({ from, to }, true);
+    // Read the note as it is now, not as the markers last saw it.
+    const lines = noteTaskLines(editor.getValue());
+    const rendered = this.renderTask(task, list);
+    const line = findTaskLine(lines, normalizedTitle(task), rendered.trim());
+    if (line >= 0) {
+      const from = { line, ch: 0 };
+      const to = { line, ch: editor.getLine(line).length };
+      editor.setSelection(from, to);
+      editor.scrollIntoView({ from, to }, true);
+    } else {
+      insertOnOwnLine(editor, rendered);
+    }
     editor.focus();
   }
 };
@@ -429,7 +437,7 @@ class TodoPanelView extends ItemView {
       this.statusEl.createDiv({ cls: "sb-todo-error", text: this.error });
     } else if (this.fetchedAt) {
       const time = this.fetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      this.statusEl.setText(`Updated ${time} · drag a task into a note`);
+      this.statusEl.setText(`Updated ${time} · drag or click a task to add it`);
     }
   }
 
@@ -632,7 +640,7 @@ class TodoPanelView extends ItemView {
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
     // A task the note already holds is shown there; any other is inserted.
-    row.addEventListener("click", () => this.plugin.showInNote(task, list));
+    row.addEventListener("click", () => this.plugin.showOrInsert(task, list));
   }
 
   // A "Notes" toggle in the meta line that shows the task's notes under it.
@@ -783,7 +791,7 @@ class TodoPanelSettingTab extends PluginSettingTab {
     this.text(
       containerEl,
       "Task template",
-      "What a dragged task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
+      "What a dragged or clicked task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
       "template"
     );
 
@@ -1378,6 +1386,24 @@ function localDayFromUtc(value) {
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
+
+// Adds text as a line of its own at the cursor: on the cursor's line when it
+// is blank, otherwise on a new line below it, with the same indentation.
+function insertOnOwnLine(editor, text) {
+  const { line } = editor.getCursor();
+  const current = editor.getLine(line);
+  const indent = current.match(/^[ \t]*/)[0];
+  const blank = !current.trim();
+  const target = blank ? line : line + 1;
+  editor.transaction({
+    changes: [
+      blank
+        ? { from: { line, ch: 0 }, to: { line, ch: current.length }, text: indent + text }
+        : { from: { line, ch: current.length }, to: { line, ch: current.length }, text: `\n${indent}${text}` },
+    ],
+  });
+  editor.setCursor({ line: target, ch: indent.length + text.length });
+}
 
 // Splits plain text into text and web-link parts, for showing links as links.
 // Punctuation that ends a sentence is not part of the link, and neither is a

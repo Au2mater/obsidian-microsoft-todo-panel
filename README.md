@@ -2,8 +2,9 @@
 
 A sidebar in Obsidian that lists your Microsoft To Do tasks. Drag a task into
 a note to insert it as a Markdown task line; it always lands on a line of its
-own, never inside an existing line, indented like the line you dropped it on. Click a task the note already
-holds to select its line there. Select **Notes** under a task to read its
+own, never inside an existing line, indented like the line you dropped it on.
+Or click a task to add it on a new line below the cursor, indented like the
+cursor's line. Clicking a task the note already holds selects its line instead. Select **Notes** under a task to read its
 notes.
 
 Microsoft To Do itself does not let you drag tasks into other apps, so the
@@ -42,7 +43,7 @@ trademark of Microsoft.
 - **Clipboard:** the sign-in dialog writes the sign-in code to the clipboard
   when you select **Copy code**. The plugin never reads the clipboard.
 - **No telemetry, ads or payments.** Task data is not written to your vault
-  unless you drag a task into a note.
+  unless you drag or click a task into a note.
 - **Cached on your device:** the last fetched lists are kept in Obsidian's
   local storage for this vault (not in the vault's files), so the panel shows
   them instantly at startup while it refreshes. Signing out clears them.
