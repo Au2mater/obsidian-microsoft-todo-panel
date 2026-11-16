@@ -45,6 +45,7 @@ const DEFAULT_SETTINGS = {
   // Panel state, kept between sessions.
   tab: "lists",
   showCompleted: false,
+  onlyInNote: false,
   collapsed: { lists: [], dates: ["date:none"] },
 };
 
@@ -321,6 +322,12 @@ class TodoPanelView extends ItemView {
       this.plugin.saveSettings();
       this.renderLists();
     });
+    this.inNoteEl = toolbar.createEl("button", { cls: "sb-todo-toggle" });
+    this.inNoteEl.addEventListener("click", () => {
+      this.plugin.settings.onlyInNote = !this.plugin.settings.onlyInNote;
+      this.plugin.saveSettings();
+      this.renderLists();
+    });
     this.toggleAllEl = toolbar.createEl("button");
     this.toggleAllEl.addEventListener("click", () => this.toggleAll());
     const refresh = toolbar.createEl("button", { attr: { "aria-label": "Refresh" } });
@@ -463,6 +470,7 @@ class TodoPanelView extends ItemView {
   // The groups the current tab shows, each with its matching tasks in order.
   groups() {
     const showCompleted = this.plugin.settings.showCompleted;
+    const onlyInNote = this.plugin.settings.onlyInNote;
     // Open tasks first in every group; completed ones, when shown, follow.
     const openFirst = (items) => [
       ...items.filter((e) => !e.task.completed),
@@ -470,7 +478,12 @@ class TodoPanelView extends ItemView {
     ];
     const entries = (list) =>
       list.tasks
-        .filter((task) => (showCompleted || !task.completed) && this.matches(task, list))
+        .filter(
+          (task) =>
+            (showCompleted || !task.completed) &&
+            (!onlyInNote || this.inNote(task, list)) &&
+            this.matches(task, list)
+        )
         .map((task) => ({ task, list }));
 
     if (this.tab === "lists") {
@@ -498,7 +511,7 @@ class TodoPanelView extends ItemView {
       { key: "date:none", name: "No date", items: all.filter((e) => !e.task.due_date).sort(byTitle) },
     ];
     for (const g of groups) g.items = openFirst(g.items);
-    return groups.filter((g) => g.items.length > 0 || (!this.filter && g.key !== "date:none"));
+    return groups.filter((g) => g.items.length > 0 || (!this.filter && !onlyInNote && g.key !== "date:none"));
   }
 
   renderLists() {
@@ -518,6 +531,13 @@ class TodoPanelView extends ItemView {
       this.completedEl.setAttr("aria-pressed", String(on));
       setIcon(this.completedEl, "circle-check");
     }
+    if (this.inNoteEl) {
+      const on = this.plugin.settings.onlyInNote;
+      this.inNoteEl.toggleClass("is-active", on);
+      this.inNoteEl.setAttr("aria-label", on ? "Show all tasks" : "Show only tasks in the active note");
+      this.inNoteEl.setAttr("aria-pressed", String(on));
+      setIcon(this.inNoteEl, "file-check");
+    }
     for (const [key, el] of Object.entries(this.tabEls || {})) {
       el.toggleClass("is-active", key === this.tab);
       el.setAttr("aria-selected", String(key === this.tab));
@@ -526,6 +546,11 @@ class TodoPanelView extends ItemView {
     const today = localToday();
     const groups = this.groups();
     const collapsed = this.collapsedSet();
+    this.inNoteSignature = this.inNoteIds();
+    if (this.plugin.settings.onlyInNote && groups.length === 0 && this.lists.length) {
+      const text = this.noteLines ? "None of your tasks are in this note yet." : "Open a note to see the tasks it holds.";
+      this.listsEl.createDiv({ cls: "sb-todo-empty", text });
+    }
 
     for (const group of groups) {
       const details = this.listsEl.createEl("details", { cls: "sb-todo-list" });
@@ -656,8 +681,18 @@ class TodoPanelView extends ItemView {
       if (this.tab === "dates") return this.renderLists();
     }
     if (!this.listsEl) return;
+    // Showing only the note's tasks: rebuild when that set of tasks changed.
+    if (this.plugin.settings.onlyInNote && this.inNoteIds() !== this.inNoteSignature) return this.renderLists();
     for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) this.markNoteMatch(row);
     for (const group of this.listsEl.querySelectorAll(".sb-todo-list")) this.markGroupNoteMatches(group);
+  }
+
+  // The IDs of the tasks the active note holds, as one string to compare.
+  inNoteIds() {
+    if (!this.noteLines) return "";
+    const ids = [];
+    for (const list of this.lists) for (const task of list.tasks) if (this.inNote(task, list)) ids.push(task.id);
+    return ids.join(",");
   }
 
   // "○2 ✓1" beside a group's title: its tasks in the active note, open and

@@ -417,6 +417,25 @@ test("a task dropped inside a line moves to a line of its own", () => {
   assert.deepStrictEqual(ed.lines, ["Call Ann about it"]);
 });
 
+test("the in-note filter shows only the tasks the active note holds", async () => {
+  const plugin = await signedInPlugin();
+  const view = global.__viewFactory({});
+  view.lists = [
+    { id: "L1", name: "Inbox", tasks: [{ id: "a", title: "Send slides", due_date: null }, { id: "b", title: "Book venue", due_date: null }] },
+    { id: "L2", name: "Work", tasks: [{ id: "c", title: "Other", due_date: null }] },
+  ];
+  view.noteLines = noteTaskLines("- [ ] Send slides");
+  const titles = () => view.groups().flatMap((g) => g.items.map((e) => e.task.title));
+  assert.deepStrictEqual(titles(), ["Send slides", "Book venue", "Other"]);
+  plugin.settings.onlyInNote = true;
+  plugin.settings.tab = "lists";
+  assert.deepStrictEqual(titles(), ["Send slides"]);
+  assert.deepStrictEqual(view.groups().map((g) => g.name), ["Inbox"], "lists without a match are hidden");
+  plugin.settings.tab = "dates";
+  assert.deepStrictEqual(view.groups().map((g) => g.name), ["No date"], "empty date sections are hidden too");
+  assert.strictEqual(view.inNoteIds(), "a");
+});
+
 test("HTML task notes become plain text", async () => {
   const plugin = await signedInPlugin();
   global.__handler = (req) => {
