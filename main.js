@@ -145,6 +145,26 @@ module.exports = class TodoPanelPlugin extends Plugin {
       .replace(/[ \t]+$/gm, "");
   }
 
+  // The date a daily note stands for, as YYYY-MM-DD, or null for any other
+  // note. Uses the Daily notes core plugin's date format (YYYY-MM-DD unless
+  // set otherwise) on the file name.
+  dailyNoteDate(file) {
+    if (!file || !file.basename || !window.moment) return null;
+    let format = "YYYY-MM-DD";
+    try {
+      const daily = this.app.internalPlugins.getPluginById("daily-notes");
+      const configured = daily && daily.instance && daily.instance.options && daily.instance.options.format;
+      if (configured) format = configured;
+    } catch (_) {
+      // Internal API; fall back to the default format.
+    }
+    // A format with folders ("YYYY/MM/YYYY-MM-DD") names the path, so match
+    // its last part against the file name.
+    const nameFormat = format.split("/").pop();
+    const parsed = window.moment(file.basename, nameFormat, true);
+    return parsed.isValid() ? parsed.format("YYYY-MM-DD") : null;
+  }
+
   // The note the user is working in: the active Markdown editor, which stays
   // set while focus is in the sidebar. Resolves to { file, text } or null.
   async activeNote() {
@@ -327,7 +347,9 @@ class TodoPanelView extends ItemView {
         .filter((g) => g.items.length > 0 || (!this.filter && !this.plugin.settings.hideEmptyLists));
     }
 
-    const today = localToday();
+    // The day the sections are relative to: the active daily note's date, or
+    // today when the active note is not a daily note.
+    const today = this.refDate || localToday();
     const all = this.lists.flatMap(entries);
     const byTitle = (a, b) => a.task.title.localeCompare(b.task.title);
     const byDue = (a, b) => a.task.due_date.localeCompare(b.task.due_date) || byTitle(a, b);
@@ -335,7 +357,7 @@ class TodoPanelView extends ItemView {
     const groups = [
       {
         key: "date:today",
-        name: "Today",
+        name: today === localToday() ? "Today" : longDate(today),
         items: all.filter((e) => e.task.due_date === today).sort((a, b) => important(a, b) || byTitle(a, b)),
       },
       { key: "date:later", name: "Later", items: all.filter((e) => e.task.due_date > today).sort(byDue) },
@@ -448,6 +470,13 @@ class TodoPanelView extends ItemView {
     const note = await this.plugin.activeNote();
     this.noteLines = note ? noteTaskLines(note.text) : null;
     this.noteName = note && note.file ? note.file.basename : "";
+    const refDate = (note && this.plugin.dailyNoteDate(note.file)) || null;
+    if (refDate !== this.refDate) {
+      this.refDate = refDate;
+      // Sections depend on the day; rebuilding calls back here once more,
+      // when the day no longer differs.
+      if (this.tab === "dates") return this.renderLists();
+    }
     if (!this.listsEl) return;
     for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) this.markNoteMatch(row);
   }
@@ -607,6 +636,14 @@ function localToday() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function longDate(isoDate) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const options = { weekday: "short", day: "numeric", month: "short" };
+  if (year !== new Date().getFullYear()) options.year = "numeric";
+  return date.toLocaleDateString([], options);
 }
 
 function shortDate(isoDate) {

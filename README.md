@@ -8,7 +8,10 @@ Microsoft To Do itself does not allow dragging tasks into other apps, so the
 drag starts in this panel instead.
 
 - **Lists** and **By date** tabs: To Do's own lists, or Today, Later (earliest
-  first), Earlier (earliest first) and No date.
+  first), Earlier (earliest first) and No date. With a daily note open, the
+  sections are relative to that note's date, and Today is titled with the
+  date instead (for example "Thu 12 Nov") unless it is today's note. The date
+  is read from the file name using the Daily notes plugin's format.
 - One button expands or collapses every group.
 - A task the active note already contains is marked **○ In note**, or
   **✓ In note** once a matching line is ticked with `[x]` (`[<]`, `[>]` and
