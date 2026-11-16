@@ -340,12 +340,32 @@ test("clicking a task the note holds selects its line; others are inserted", asy
     replaceRange: (value) => calls.push(["insert", value]),
     setCursor: () => {},
   };
-  plugin.app.workspace.activeEditor = { editor };
+  // Focus is in the panel, so there is no active Markdown view: the note is
+  // the one that was active last in the main area, here in reading view.
+  const { MarkdownView } = require("./obsidian-stub.js");
+  const view = Object.assign(new MarkdownView(), {
+    editor,
+    leaf: { id: "note" },
+    mode: "preview",
+    getMode() {
+      return this.mode;
+    },
+    getState: () => ({ file: "Day.md" }),
+    async setState(state) {
+      this.mode = state.mode;
+    },
+  });
+  plugin.app.workspace.getActiveViewOfType = () => null;
+  plugin.app.workspace.getMostRecentLeaf = () => ({ view });
+  plugin.app.workspace.setActiveLeaf = (leaf) => calls.push(["activate", leaf.id]);
   const list = { id: "L", name: "Inbox" };
-  plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
-  assert.deepStrictEqual(calls[0], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
+  await plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
+  assert.strictEqual(view.mode, "source", "switched out of reading view");
+  assert.deepStrictEqual(calls[0], ["activate", "note"]);
+  assert.deepStrictEqual(calls[1], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
   calls.length = 0;
-  plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
+  await plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
+  calls.shift();
   assert.strictEqual(calls[0][0], "insert");
   assert.strictEqual(calls[0][1], "- [ ] Something new");
 });

@@ -223,25 +223,34 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return parsed.isValid() ? parsed.format("YYYY-MM-DD") : null;
   }
 
-  // The note the user is working in: the active Markdown editor, which stays
-  // set while focus is in the sidebar. Resolves to { file, text } or null.
-  async activeNote() {
-    const active = this.app.workspace.activeEditor;
-    if (active && active.editor) return { file: active.file, text: active.editor.getValue() };
-    const file = this.app.workspace.getActiveFile();
-    if (file && file.extension === "md") return { file, text: await this.app.vault.cachedRead(file) };
-    return null;
+  // The note being worked in: the active Markdown view, or, while focus is
+  // in the sidebar (clicking the panel moves it there), the Markdown view
+  // that was active last in the main area.
+  noteView() {
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (active) return active;
+    const recent = this.app.workspace.getMostRecentLeaf();
+    return recent && recent.view instanceof MarkdownView ? recent.view : null;
+  }
+
+  // The note being worked in, as { file, text }, or null.
+  activeNote() {
+    const view = this.noteView();
+    return view && view.file ? { file: view.file, text: view.getViewData() } : null;
   }
 
   // Clicking a task: when the note being worked in already holds it, select
   // that line and scroll to it; otherwise insert the task at the cursor.
-  showOrInsert(task, list) {
-    const active = this.app.workspace.activeEditor;
-    const editor = (active && active.editor) || this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
-    if (!editor) {
-      new Notice("Click into a note first, then click the task.");
+  async showOrInsert(task, list) {
+    const view = this.noteView();
+    if (!view) {
+      new Notice("Open a note first, then click the task.");
       return;
     }
+    // Selecting or inserting happens in the editor, so leave reading view.
+    if (view.getMode() === "preview") await view.setState({ ...view.getState(), mode: "source" }, { history: false });
+    this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
+    const editor = view.editor;
     // Read the note as it is now, not as the markers last saw it.
     const lines = noteTaskLines(editor.getValue());
     const line = findTaskLine(lines, normalizedTitle(task), this.renderTask(task, list).trim());
@@ -251,7 +260,6 @@ module.exports = class TodoPanelPlugin extends Plugin {
     }
     const from = { line, ch: 0 };
     const to = { line, ch: editor.getLine(line).length };
-    if (active && active.leaf) this.app.workspace.setActiveLeaf(active.leaf, { focus: true });
     editor.setSelection(from, to);
     editor.scrollIntoView({ from, to }, true);
     editor.focus();
