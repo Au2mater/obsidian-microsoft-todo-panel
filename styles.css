@@ -1,0 +1,84 @@
+.sb-todo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+}
+
+.sb-todo-toolbar {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: center;
+}
+
+.sb-todo-toolbar input {
+  flex: 1;
+  min-width: 0;
+}
+
+.sb-todo-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.sb-todo-error {
+  font-size: var(--font-ui-small);
+  color: var(--text-error);
+  white-space: pre-wrap;
+}
+
+.sb-todo-list > summary {
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+  padding: var(--size-4-1) 0;
+}
+
+.sb-todo-count {
+  color: var(--text-faint);
+  font-weight: normal;
+  margin-left: var(--size-4-1);
+}
+
+.sb-todo-task {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: baseline;
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  cursor: grab;
+  user-select: none;
+}
+
+.sb-todo-task:hover {
+  background: var(--background-modifier-hover);
+}
+
+.sb-todo-task.is-dragging {
+  opacity: 0.5;
+}
+
+.sb-todo-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sb-todo-due {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.sb-todo-due.is-today {
+  color: var(--text-accent);
+}
+
+.sb-todo-due.is-overdue {
+  color: var(--text-error);
+}
+
+.sb-todo-important::before {
+  content: "!";
+  color: var(--text-error);
+  font-weight: var(--font-bold);
+}

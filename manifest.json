@@ -1,0 +1,9 @@
+{
+  "id": "second-brain-todo-panel",
+  "name": "To Do Panel",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Shows your Microsoft To Do tasks in a sidebar, read through the second-brain CLI. Drag a task into a note to insert it.",
+  "author": "second-brain",
+  "isDesktopOnly": true
+}
