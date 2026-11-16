@@ -1,9 +1,9 @@
 # Microsoft To Do Panel for Obsidian
 
 A sidebar in Obsidian that lists your Microsoft To Do tasks. Drag a task into
-a note to insert it as a Markdown task line, or click it to insert it at the
-cursor. Clicking a task the note already holds selects that line instead.
-Select **Notes** under a task to read its notes.
+a note to insert it as a Markdown task line. Click a task the note already
+holds to select its line there. Select **Notes** under a task to read its
+notes.
 
 Microsoft To Do itself does not let you drag tasks into other apps, so the
 drag starts in this panel instead.
@@ -39,7 +39,7 @@ trademark of Microsoft.
 - **Clipboard:** the sign-in dialog writes the sign-in code to the clipboard
   when you select **Copy code**. The plugin never reads the clipboard.
 - **No telemetry, ads or payments.** Task data is not written to your vault
-  unless you drag or click a task into a note.
+  unless you drag a task into a note.
 - **Cached on your device:** the last fetched lists are kept in Obsidian's
   local storage for this vault (not in the vault's files), so the panel shows
   them instantly at startup while it refreshes. Signing out clears them.

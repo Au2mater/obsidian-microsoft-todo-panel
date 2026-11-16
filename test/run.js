@@ -326,12 +326,11 @@ test("the completed filter starts at local midnight N days ago", () => {
   assert.strictEqual(taskFilter(0), "status ne 'completed'");
 });
 
-test("clicking a task the note holds selects its line; others are inserted", async () => {
+test("clicking a task the note holds selects its line; other clicks do nothing", async () => {
   const plugin = await signedInPlugin();
   const text = ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "- [x] Book venue"];
   const calls = [];
   const editor = {
-    getValue: () => text.join("\n"),
     getLine: (n) => text[n],
     getCursor: () => ({ line: 1, ch: 0 }),
     setSelection: (from, to) => calls.push(["select", from, to]),
@@ -347,6 +346,7 @@ test("clicking a task the note holds selects its line; others are inserted", asy
     editor,
     leaf: { id: "note" },
     mode: "preview",
+    getViewData: () => text.join("\n"),
     getMode() {
       return this.mode;
     },
@@ -359,15 +359,15 @@ test("clicking a task the note holds selects its line; others are inserted", asy
   plugin.app.workspace.getMostRecentLeaf = () => ({ view });
   plugin.app.workspace.setActiveLeaf = (leaf) => calls.push(["activate", leaf.id]);
   const list = { id: "L", name: "Inbox" };
-  await plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
+  await plugin.showInNote({ id: "1", title: "send  SLIDES", due_date: null }, list);
   assert.strictEqual(view.mode, "source", "switched out of reading view");
   assert.deepStrictEqual(calls[0], ["activate", "note"]);
   assert.deepStrictEqual(calls[1], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
   calls.length = 0;
-  await plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
-  calls.shift();
-  assert.strictEqual(calls[0][0], "insert");
-  assert.strictEqual(calls[0][1], "- [ ] Something new");
+  view.mode = "preview";
+  await plugin.showInNote({ id: "2", title: "Something new", due_date: null }, list);
+  assert.deepStrictEqual(calls, [], "nothing selected, inserted or activated");
+  assert.strictEqual(view.mode, "preview", "the note stays in reading view");
 });
 
 test("HTML task notes become plain text", async () => {

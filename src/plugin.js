@@ -1,8 +1,7 @@
 // Microsoft To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
 // to Microsoft itself (OAuth device code flow, read-only Tasks permission) and
 // reads tasks from Microsoft Graph. Dragging a task into a note inserts it as
-// a Markdown line; clicking a task inserts it at the cursor of the last
-// active note.
+// a Markdown line; clicking a task the note already holds selects that line.
 //
 // Plain JavaScript with no dependencies: `npm run build` checks this file and
 // writes it unchanged to main.js, the file Obsidian loads (see README.md).
@@ -239,43 +238,24 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return view && view.file ? { file: view.file, text: view.getViewData() } : null;
   }
 
-  // Clicking a task: when the note being worked in already holds it, select
-  // that line and scroll to it; otherwise insert the task at the cursor.
-  async showOrInsert(task, list) {
+  // Clicking a task the note being worked in already holds selects that line
+  // and scrolls to it. Clicking any other task does nothing: tasks are added
+  // by dragging.
+  async showInNote(task, list) {
     const view = this.noteView();
-    if (!view) {
-      new Notice("Open a note first, then click the task.");
-      return;
-    }
-    // Selecting or inserting happens in the editor, so leave reading view.
+    if (!view) return;
+    // Read the note as it is now, not as the markers last saw it.
+    const lines = noteTaskLines(view.getViewData());
+    const line = findTaskLine(lines, normalizedTitle(task), this.renderTask(task, list).trim());
+    if (line < 0) return;
+    // Selecting happens in the editor, so leave reading view.
     if (view.getMode() === "preview") await view.setState({ ...view.getState(), mode: "source" }, { history: false });
     this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
     const editor = view.editor;
-    // Read the note as it is now, not as the markers last saw it.
-    const lines = noteTaskLines(editor.getValue());
-    const line = findTaskLine(lines, normalizedTitle(task), this.renderTask(task, list).trim());
-    if (line < 0) {
-      this.insertIntoEditor(editor, this.renderTask(task, list));
-      return;
-    }
     const from = { line, ch: 0 };
     const to = { line, ch: editor.getLine(line).length };
     editor.setSelection(from, to);
     editor.scrollIntoView({ from, to }, true);
-    editor.focus();
-  }
-
-  // Puts the task on its own line at the cursor.
-  insertIntoEditor(editor, text) {
-    const cursor = editor.getCursor();
-    const line = editor.getLine(cursor.line);
-    if (line.trim() === "") {
-      editor.replaceRange(text, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
-      editor.setCursor({ line: cursor.line, ch: text.length });
-    } else {
-      editor.replaceRange("\n" + text, { line: cursor.line, ch: line.length });
-      editor.setCursor({ line: cursor.line + 1, ch: text.length });
-    }
     editor.focus();
   }
 };
@@ -430,7 +410,7 @@ class TodoPanelView extends ItemView {
       this.statusEl.createDiv({ cls: "sb-todo-error", text: this.error });
     } else if (this.fetchedAt) {
       const time = this.fetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      this.statusEl.setText(`Updated ${time} · drag a task into a note, or click to insert`);
+      this.statusEl.setText(`Updated ${time} · drag a task into a note`);
     }
   }
 
@@ -615,7 +595,7 @@ class TodoPanelView extends ItemView {
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
     // A task the note already holds is shown there; any other is inserted.
-    row.addEventListener("click", () => this.plugin.showOrInsert(task, list));
+    row.addEventListener("click", () => this.plugin.showInNote(task, list));
   }
 
   // A "Notes" toggle in the meta line that shows the task's notes under it.
@@ -751,7 +731,7 @@ class TodoPanelSettingTab extends PluginSettingTab {
     this.text(
       containerEl,
       "Task template",
-      "What a dragged or clicked task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
+      "What a dragged task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
       "template"
     );
 

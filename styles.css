@@ -181,6 +181,11 @@
   display: inline;
 }
 
+/* Clicking a task the note holds shows it there. */
+.sb-todo-task.is-in-note {
+  cursor: pointer;
+}
+
 .sb-todo-task.is-in-note .sb-todo-marker {
   border-color: var(--color-green);
 }
