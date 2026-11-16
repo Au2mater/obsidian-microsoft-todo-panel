@@ -124,18 +124,22 @@ Requires Obsidian 1.11.4 or newer, for secret storage.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Client ID | empty | From your app registration. |
-| Tenant | `common` | Tenant ID, `common`, `organizations` or `consumers`. |
-| Permissions | `Tasks.Read` | Microsoft Graph permissions to ask for. |
-| Completed tasks to load (days) | `7` | How far back the show-completed toggle reaches. |
-| Daily note date format | `YYYY-MM-DD` | Moment.js format of daily note file names. |
-| Hide empty lists | on | Hides lists with no tasks on the Lists tab. |
+The settings tab shows your Microsoft account and the task template. The rest
+is under **Advanced**, collapsed.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Client ID | empty | From your app registration. Shown up front until you sign in. |
+| Tenant | `common` | Tenant ID, `common`, `organizations` or `consumers`. Shown up front until you sign in. |
 | Task template | `- [ ] {{title}} {{due}}` | `{{title}}`, `{{due}}`, `{{date}}`, `{{list}}`, `{{link}}`, `{{id}}` |
-| Due format | `📅 {{date}}` | `{{date}}` is YYYY-MM-DD. |
-| Link format | `https://to-do.office.com/tasks/id/{{id}}/details` | `{{id}}`, `{{list}}` |
+| Due date format (advanced) | `📅 {{date}}` | What `{{due}}` becomes. `{{date}}` is YYYY-MM-DD. |
+| Completed tasks to load (advanced) | `7` days | How far back the show-completed toggle reaches; 0 hides it. |
+| Daily note date format (advanced) | `YYYY-MM-DD` | Moment.js format of daily note file names. |
+| Permissions (advanced) | `Tasks.Read` | Microsoft Graph permissions to ask for. |
 
 `{{due}}` is empty for a task with no due date, and the spaces around it
-collapse.
+collapse. `{{link}}` is `https://to-do.office.com/tasks/id/<task id>/details`.
+Lists with no tasks to show are hidden.
 
 ## Development
 
@@ -152,6 +156,15 @@ The tests load `src/plugin.js` against a small stand-in for the Obsidian API and
 cover sign-in, token refresh, reading from Microsoft Graph and note matching.
 
 To release, bump `version` in `manifest.json` and `package.json`, add it to
-`versions.json`, commit, and push a tag with the same version (for example
-`1.0.1`). The release workflow tests the plugin, attests the build provenance
-of the release files and publishes the GitHub release.
+`versions.json` and commit. Push the tag first and the branch only once the
+release exists, because the community directory reads `manifest.json` from the
+default branch and expects a release for that version:
+
+```bash
+git tag 1.2.0 && git push origin 1.2.0   # the workflow builds and publishes
+# wait for the release to appear, then:
+git push origin main
+```
+
+The release workflow tests the plugin, attests the build provenance of the
+release files and publishes the GitHub release.

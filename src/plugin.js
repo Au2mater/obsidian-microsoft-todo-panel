@@ -41,8 +41,6 @@ const DEFAULT_SETTINGS = {
   completedDays: 7,
   template: "- [ ] {{title}} {{due}}",
   dueFormat: "📅 {{date}}",
-  linkFormat: "https://to-do.office.com/tasks/id/{{id}}/details",
-  hideEmptyLists: true,
   // How daily note file names spell their date (Moment.js format).
   dailyNoteFormat: "YYYY-MM-DD",
   // Panel state, kept between sessions.
@@ -51,8 +49,11 @@ const DEFAULT_SETTINGS = {
   collapsed: { lists: [], dates: ["date:none"] },
 };
 
-// Settings from the versions that read tasks through an external command.
-const RETIRED_SETTINGS = ["command", "timeoutSeconds"];
+// Settings that earlier versions had: an external command (before 0.2), and
+// options folded into fixed behaviour in 1.2.
+const RETIRED_SETTINGS = ["command", "timeoutSeconds", "linkFormat", "hideEmptyLists"];
+// What {{link}} in the task template becomes.
+const TASK_LINK_FORMAT = "https://to-do.office.com/tasks/id/{{id}}/details";
 
 module.exports = class TodoPanelPlugin extends Plugin {
   async onload() {
@@ -201,7 +202,7 @@ module.exports = class TodoPanelPlugin extends Plugin {
       id: task.id,
       date: task.due_date || "",
       due: task.due_date ? fill(s.dueFormat, { date: task.due_date }) : "",
-      link: fill(s.linkFormat, { id: encodeURIComponent(task.id), list: encodeURIComponent(list.id) }),
+      link: fill(TASK_LINK_FORMAT, { id: encodeURIComponent(task.id), list: encodeURIComponent(list.id) }),
     };
     let line = fill(s.template, values);
     if (task.completed) line = line.replace("[ ]", "[x]");
@@ -459,7 +460,8 @@ class TodoPanelView extends ItemView {
     if (this.tab === "lists") {
       return this.lists
         .map((list) => ({ key: list.id, name: list.name, items: openFirst(entries(list)) }))
-        .filter((g) => g.items.length > 0 || (!this.filter && !this.plugin.settings.hideEmptyLists));
+        // Lists with nothing to show only take up room.
+        .filter((g) => g.items.length > 0);
     }
 
     // The day the sections are relative to: the active daily note's date, or
@@ -602,7 +604,7 @@ class TodoPanelView extends ItemView {
     // note and the settings that shape matching are what they were.
     const s = this.plugin.settings;
     const key = note
-      ? [note.file ? note.file.path : "", s.template, s.dueFormat, s.linkFormat, s.dailyNoteFormat, note.text].join("\u0000")
+      ? [note.file ? note.file.path : "", s.template, s.dueFormat, s.dailyNoteFormat, note.text].join("\u0000")
       : "";
     if (key === this.checkedNoteKey) return;
     this.checkedNoteKey = key;
@@ -672,76 +674,48 @@ class TodoPanelSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // Kept short on purpose: the account, and the line a dropped task becomes.
+  // Everything most people never change sits under Advanced, collapsed. The
+  // app's client ID and tenant are up front only until signed in.
   display() {
     const { containerEl } = this;
     const s = this.plugin.settings;
     const auth = this.plugin.auth;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Microsoft account").setHeading();
     const account = new Setting(containerEl);
     if (auth.signedIn) {
       account
-        .setName(auth.account ? `Signed in as ${auth.account}` : "Signed in")
+        .setName(auth.account ? `Signed in as ${auth.account}` : "Signed in to Microsoft")
         .setDesc("The sign-in is kept in Obsidian's secret storage on this device, never in the vault.")
-        .addButton((button) =>
-          button.setButtonText("Sign out").onClick(() => this.plugin.signOut())
-        );
+        .addButton((button) => button.setButtonText("Sign out").onClick(() => this.plugin.signOut()));
     } else {
       account
         .setName("Not signed in")
-        .setDesc("Add your app's client ID below, then sign in with a code in your browser.")
+        .setDesc("Register an app in Microsoft Entra (see the README), enter its IDs below, then sign in.")
         .addButton((button) =>
           button
             .setButtonText("Sign in")
             .setCta()
             .onClick(() => this.plugin.signIn())
         );
+      this.appSettings(containerEl);
     }
 
-    // Changing which app or directory to sign in with ends the current
-    // sign-in, which belongs to the old one.
-    const authSetting = (name, desc, key, placeholder) =>
-      new Setting(containerEl)
-        .setName(name)
-        .setDesc(desc)
-        .addText((text) => {
-          text.setPlaceholder(placeholder).setValue(s[key]);
-          // Applied when the field is left, not per keystroke: a half-typed
-          // ID would otherwise sign out and redraw the tab mid-word.
-          text.inputEl.addEventListener("change", async () => {
-            const value = text.getValue().trim();
-            if (value === s[key]) return;
-            const wasSignedIn = auth.signedIn;
-            s[key] = value;
-            await this.plugin.saveSettings();
-            if (wasSignedIn && !auth.matchesSettings()) this.plugin.signOut();
-          });
-        });
-    authSetting(
-      "Client ID",
-      "The Application (client) ID of the app you registered in Microsoft Entra. See the README.",
-      "clientId",
-      "00000000-0000-0000-0000-000000000000"
-    );
-    authSetting(
-      "Tenant",
-      "Your directory (tenant) ID if the app accepts only accounts in your organisation. " +
-        "Otherwise common, organizations or consumers, matching the app's supported account types.",
-      "tenant",
-      "common"
-    );
-    authSetting(
-      "Permissions",
-      "Microsoft Graph permissions to ask for. Tasks.Read is enough; the plugin never changes tasks.",
-      "scopes",
-      "Tasks.Read"
+    this.text(
+      containerEl,
+      "Task template",
+      "What a dragged or clicked task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
+      "template"
     );
 
-    new Setting(containerEl).setName("Tasks").setHeading();
-    new Setting(containerEl)
+    const advanced = containerEl.createEl("details", { cls: "sb-todo-advanced" });
+    advanced.createEl("summary", { text: "Advanced" });
+    if (auth.signedIn) this.appSettings(advanced);
+    this.text(advanced, "Due date format", "What {{due}} becomes when a task has a due date. {{date}} is YYYY-MM-DD.", "dueFormat");
+    new Setting(advanced)
       .setName("Completed tasks to load (days)")
-      .setDesc("How far back the show-completed toggle reaches. 0 loads no completed tasks.")
+      .setDesc("How far back the show-completed toggle reaches. 0 turns it off.")
       .addText((text) => {
         text.setValue(String(s.completedDays));
         text.inputEl.addEventListener("change", async () => {
@@ -752,12 +726,9 @@ class TodoPanelSettingTab extends PluginSettingTab {
           this.plugin.panels().forEach((view) => view.refresh());
         });
       });
-    new Setting(containerEl)
+    new Setting(advanced)
       .setName("Daily note date format")
-      .setDesc(
-        "How your daily notes' file names spell their date, in Moment.js format. " +
-          "With a daily note open, By date groups tasks around that note's date."
-      )
+      .setDesc("How daily note file names spell their date, in Moment.js format. By date groups tasks around an open daily note's date.")
       .addText((text) =>
         text
           .setPlaceholder("YYYY-MM-DD")
@@ -768,28 +739,57 @@ class TodoPanelSettingTab extends PluginSettingTab {
             this.plugin.panels().forEach((view) => view.updateNoteMatches());
           })
       );
-    new Setting(containerEl)
-      .setName("Hide empty lists")
-      .addToggle((toggle) =>
-        toggle.setValue(s.hideEmptyLists).onChange(async (value) => {
-          s.hideEmptyLists = value;
-          await this.plugin.saveSettings();
-          this.plugin.panels().forEach((view) => view.renderLists());
-        })
-      );
-
-    new Setting(containerEl).setName("Inserting tasks").setHeading();
-    this.text(
-      "Task template",
-      "What a dropped task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
-      "template"
+    this.authText(
+      advanced,
+      "Permissions",
+      "Microsoft Graph permissions to ask for. Tasks.Read is enough; change it only if your organisation granted the app a different one.",
+      "scopes",
+      "Tasks.Read"
     );
-    this.text("Due format", "What {{due}} becomes when the task has a due date. {{date}} is YYYY-MM-DD.", "dueFormat");
-    this.text("Link format", "What {{link}} becomes. Placeholders: {{id}}, {{list}}.", "linkFormat");
   }
 
-  text(name, desc, key) {
-    new Setting(this.containerEl)
+  // The app registration's IDs, which sign-in needs.
+  appSettings(el) {
+    this.authText(
+      el,
+      "Client ID",
+      "The Application (client) ID of the app you registered in Microsoft Entra.",
+      "clientId",
+      "00000000-0000-0000-0000-000000000000"
+    );
+    this.authText(
+      el,
+      "Tenant",
+      "Your directory (tenant) ID if the app accepts only accounts in your organisation; otherwise common or consumers.",
+      "tenant",
+      "common"
+    );
+  }
+
+  // A setting that decides which app or directory to sign in with. It applies
+  // when the field is left, not per keystroke, and ends a sign-in that belongs
+  // to the old value.
+  authText(el, name, desc, key, placeholder) {
+    const s = this.plugin.settings;
+    const auth = this.plugin.auth;
+    new Setting(el)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => {
+        text.setPlaceholder(placeholder).setValue(s[key]);
+        text.inputEl.addEventListener("change", async () => {
+          const value = text.getValue().trim();
+          if (value === s[key]) return;
+          const wasSignedIn = auth.signedIn;
+          s[key] = value;
+          await this.plugin.saveSettings();
+          if (wasSignedIn && !auth.matchesSettings()) this.plugin.signOut();
+        });
+      });
+  }
+
+  text(el, name, desc, key) {
+    new Setting(el)
       .setName(name)
       .setDesc(desc)
       .addText((text) =>

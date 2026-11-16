@@ -273,3 +273,15 @@
 .sb-todo-group-in-note:empty {
   display: none;
 }
+
+/* Settings: the collapsed Advanced section. */
+.sb-todo-advanced {
+  margin-top: var(--size-4-4);
+}
+
+.sb-todo-advanced > summary {
+  cursor: pointer;
+  padding: var(--size-4-2) 0;
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
