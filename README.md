@@ -37,9 +37,11 @@ trademark of Microsoft.
   your To Do lists and tasks. Nothing is sent anywhere else.
 - **Clipboard:** the sign-in dialog writes the sign-in code to the clipboard
   when you select **Copy code**. The plugin never reads the clipboard.
-- **No telemetry, ads or payments.** Task data stays in memory while the panel
-  is open and is not written to your vault unless you drag or click a task
-  into a note.
+- **No telemetry, ads or payments.** Task data is not written to your vault
+  unless you drag or click a task into a note.
+- **Cached on your device:** the last fetched lists are kept in Obsidian's
+  local storage for this vault (not in the vault's files), so the panel shows
+  them instantly at startup while it refreshes. Signing out clears them.
 - **Stored on your device:** the sign-in token, in Obsidian's secret storage
   (see below). The client ID, tenant and other settings are in the plugin's
   `data.json` in your vault.
@@ -87,8 +89,8 @@ Open the panel from the ribbon icon or with the command **Microsoft To Do Panel:
 
 The sign-in (a refresh token) is stored in Obsidian's secret storage on this
 device, never in the vault or the plugin's settings file, so it is not synced
-or committed. Sign in once on each device. Changing the client ID or tenant,
-or selecting **Sign out**, removes it.
+or committed. Each vault keeps its own sign-in; sign in once per vault on each
+device. Changing the client ID or tenant, or selecting **Sign out**, ends it.
 
 ### If sign-in fails
 
@@ -127,6 +129,7 @@ Requires Obsidian 1.11.4 or newer, for secret storage.
 | Permissions | `Tasks.Read` | Microsoft Graph permissions to ask for. |
 | Completed tasks to load (days) | `7` | How far back the show-completed toggle reaches. |
 | Daily note date format | `YYYY-MM-DD` | Moment.js format of daily note file names. |
+| Hide empty lists | on | Hides lists with no tasks on the Lists tab. |
 | Task template | `- [ ] {{title}} {{due}}` | `{{title}}`, `{{due}}`, `{{date}}`, `{{list}}`, `{{link}}`, `{{id}}` |
 | Due format | `📅 {{date}}` | `{{date}}` is YYYY-MM-DD. |
 | Link format | `https://to-do.office.com/tasks/id/{{id}}/details` | `{{id}}`, `{{list}}` |
@@ -145,7 +148,7 @@ try a change, build it into a vault:
 npm test
 ```
 
-The tests load `main.js` against a small stand-in for the Obsidian API and
+The tests load `src/plugin.js` against a small stand-in for the Obsidian API and
 cover sign-in, token refresh, reading from Microsoft Graph and note matching.
 
 To release, bump `version` in `manifest.json` and `package.json`, add it to

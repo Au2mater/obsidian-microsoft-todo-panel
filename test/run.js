@@ -16,18 +16,18 @@ Module._resolveFilename = function (request, ...rest) {
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError } = TodoPanelPlugin.__internals;
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter } = TodoPanelPlugin.__internals;
 
-global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout() {} };
+global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout() {}, setInterval, clearInterval };
 global.atob = global.atob || ((s) => Buffer.from(s, "base64").toString("binary"));
 
-const SESSION = "todo-panel-microsoft-session";
+const LEGACY_SESSION = "todo-panel-microsoft-session";
 const idToken = `h.${Buffer.from(JSON.stringify({ preferred_username: "user@example.com" })).toString("base64url")}.s`;
 
 const tests = [];
@@ -80,7 +80,7 @@ test("keeps tokens in secret storage, never in plugin data", async () => {
   const plugin = await signedInPlugin();
   await plugin.saveSettings();
   assert.ok(!JSON.stringify(global.__saved).includes("RT1"));
-  assert.ok(plugin.app.secrets[SESSION].includes("RT1"));
+  assert.ok(plugin.app.secrets[plugin.auth.secretId].includes("RT1"));
 });
 
 test("a declined or cancelled sign-in stops", async () => {
@@ -120,8 +120,10 @@ test("an expired refresh token signs out with a short message", async () => {
 
 test("a session issued for another app is dropped", async () => {
   const plugin = await signedInPlugin();
-  plugin.app.secrets[SESSION] = JSON.stringify({ client_id: "other", tenant: "tenant", refresh_token: "r" });
+  const stored = JSON.stringify({ client_id: "other", tenant: "tenant", refresh_token: "r" });
+  plugin.app.secrets[plugin.auth.secretId] = stored;
   assert.strictEqual(new MicrosoftAuth(plugin).signedIn, false);
+  assert.strictEqual(plugin.app.secrets[plugin.auth.secretId], stored, "not wiped, in case another vault uses it");
 });
 
 test("reads lists and tasks: 401 retry, 429 back-off, paging, mapping, sorting", async () => {
@@ -211,8 +213,105 @@ test("opening the panel does not wait for tasks to load", async () => {
   assert.strictEqual(opened, "opened", "onOpen returned before tasks loaded");
   assert.ok(global.__layoutReady, "fetch deferred until the layout is ready");
   global.__layoutReady();
+  await new Promise((resolve) => setImmediate(resolve)); // the fetch waits for an idle moment
   assert.ok(view.loading, "fetch running in the background");
   finishFetch([]);
+});
+
+test("a session under the legacy secret ID moves to this vault's ID", async () => {
+  const plugin = await signedInPlugin();
+  const session = plugin.app.secrets[plugin.auth.secretId];
+  plugin.app.secrets[plugin.auth.secretId] = "";
+  plugin.app.secrets[LEGACY_SESSION] = session;
+  const auth = new MicrosoftAuth(plugin);
+  assert.ok(auth.signedIn);
+  assert.strictEqual(plugin.app.secrets[auth.secretId], session);
+  assert.strictEqual(plugin.app.secrets[LEGACY_SESSION], "");
+  assert.match(auth.secretId, /^[a-z0-9-]+$/);
+});
+
+test("signing out while a token refresh is in flight stays signed out", async () => {
+  const plugin = await signedInPlugin();
+  plugin.auth.session.expires_at = 0;
+  let answer;
+  global.__handler = () => ({ body: { access_token: "AT2", refresh_token: "RT2", expires_in: 3600 } });
+  const pending = plugin.auth.accessToken();
+  plugin.auth.signOut();
+  await assert.rejects(pending, /Not signed in/);
+  assert.strictEqual(plugin.auth.signedIn, false);
+  assert.strictEqual(plugin.app.secrets[plugin.auth.secretId], "");
+});
+
+test("closing the sign-in dialog while the token request is out stays signed out", async () => {
+  global.__requests = [];
+  global.__data = { clientId: "client", tenant: "tenant" };
+  const plugin = new TodoPanelPlugin();
+  await plugin.onload();
+  const cancel = { cancelled: false };
+  global.__handler = () => {
+    cancel.cancelled = true; // the user closes the dialog while this is out
+    return { body: { access_token: "AT", refresh_token: "RT", expires_in: 3600 } };
+  };
+  await assert.rejects(plugin.auth.completeDeviceFlow({ device_code: "d", interval: 1 }, cancel), /cancelled/);
+  assert.strictEqual(plugin.auth.signedIn, false);
+});
+
+test("lists fetched for a session that ended are thrown away", async () => {
+  const plugin = await signedInPlugin();
+  let finish;
+  plugin.fetchLists = () => new Promise((resolve) => (finish = resolve));
+  const view = global.__viewFactory({});
+  const loading = view.refresh();
+  plugin.auth.signOut();
+  finish([{ id: "L1", name: "Old account", tasks: [] }]);
+  await loading;
+  assert.deepStrictEqual(view.lists, []);
+  assert.strictEqual(plugin.app.loadLocalStorage("microsoft-todo-panel-lists"), null);
+});
+
+test("a refresh asked for while one runs is queued, not dropped", async () => {
+  const plugin = await signedInPlugin();
+  let calls = 0;
+  const finishers = [];
+  plugin.fetchLists = () => {
+    calls++;
+    return new Promise((resolve) => finishers.push(resolve));
+  };
+  const view = global.__viewFactory({});
+  const first = view.refresh();
+  view.refresh();
+  finishers[0]([]);
+  await first;
+  assert.strictEqual(calls, 2);
+  finishers[1]([]);
+});
+
+test("the last lists are cached for this account and shown at once", async () => {
+  const plugin = await signedInPlugin();
+  const lists = [{ id: "L1", name: "Inbox", tasks: [] }];
+  plugin.fetchLists = async () => lists;
+  await global.__viewFactory({}).refresh();
+  assert.deepStrictEqual(plugin.loadListCache().lists, lists);
+  plugin.auth.session.account = "someone-else@example.com";
+  assert.strictEqual(plugin.loadListCache(), null, "another account never sees them");
+});
+
+test("long emoji runs in a note do not hang the matcher", () => {
+  const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+  const started = Date.now();
+  normalizeText(`- [ ] Party ${family.repeat(40)} x`);
+  normalizeText(`Plan ${"\u{1F389}".repeat(2000)} x`);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+  assert.strictEqual(normalizeText(`Party \u{1F389}\u{1F389} 📅 2026-11-20`), "party");
+});
+
+test("the completed filter starts at local midnight N days ago", () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  const pad = (n) => String(n).padStart(2, "0");
+  const expected = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00:00`;
+  assert.ok(taskFilter(7).endsWith(`ge '${expected}'`));
+  assert.strictEqual(taskFilter(0), "status ne 'completed'");
 });
 
 test("auth errors are trimmed and get a setup hint", () => {

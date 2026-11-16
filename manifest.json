@@ -1,7 +1,7 @@
 {
   "id": "microsoft-todo-panel",
   "name": "Microsoft To Do Panel",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "minAppVersion": "1.11.4",
   "description": "Drag your Microsoft To Do tasks into notes from a sidebar, and see which ones a note already holds. Read-only.",
   "author": "Au2mater",

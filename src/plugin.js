@@ -4,8 +4,8 @@
 // a Markdown line; clicking a task inserts it at the cursor of the last
 // active note.
 //
-// Plain JavaScript with no build step: copy manifest.json, main.js and
-// styles.css into the vault's plugins folder (see README.md).
+// Plain JavaScript with no dependencies: `npm run build` checks this file and
+// writes it unchanged to main.js, the file Obsidian loads (see README.md).
 
 const {
   ItemView,
@@ -24,8 +24,13 @@ const VIEW_TYPE = "microsoft-todo-panel";
 const DRAG_TYPE = "application/x-microsoft-todo-task";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // Where the sign-in session lives: Obsidian's secret storage, kept on this
-// device and outside the vault, so it is never synced or committed.
-const SESSION_SECRET_ID = "todo-panel-microsoft-session";
+// device and outside the vault, so it is never synced or committed. The ID
+// carries a hash of the vault name, so vaults signed in to different apps do
+// not overwrite each other. Versions up to 1.0.3 used the bare legacy ID.
+const SESSION_SECRET_PREFIX = "todo-panel-microsoft-session";
+// The last fetched lists, in this vault's local storage on this device, so the
+// panel can show them at once on startup while it refreshes.
+const LIST_CACHE_KEY = "microsoft-todo-panel-lists";
 
 const DEFAULT_SETTINGS = {
   // Microsoft sign-in. There is no shared app registration: each user
@@ -66,29 +71,45 @@ module.exports = class TodoPanelPlugin extends Plugin {
       name: "Refresh tasks",
       callback: () => this.panels().forEach((view) => view.refresh()),
     });
-    this.addSettingTab(new TodoPanelSettingTab(this.app, this));
+    this.settingTab = new TodoPanelSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     // Keep the "in note" markers in step with the note being worked on.
-    const noteChanged = () => this.panels().forEach((view) => view.updateNoteMatches());
-    this.registerEvent(this.app.workspace.on("active-leaf-change", noteChanged));
-    this.registerEvent(this.app.workspace.on("file-open", noteChanged));
-    let pending = null;
-    this.registerEvent(
-      this.app.workspace.on("editor-change", () => {
-        window.clearTimeout(pending);
-        pending = window.setTimeout(noteChanged, 300);
-      })
-    );
+    // Opening a note fires several events at once, and typing fires one per
+    // keystroke, so all of them share one short timer and the note is checked
+    // once per burst.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleNoteCheck(50)));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.scheduleNoteCheck(50)));
+    this.registerEvent(this.app.workspace.on("editor-change", () => this.scheduleNoteCheck(300)));
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file === this.app.workspace.getActiveFile()) noteChanged();
+        if (file === this.app.workspace.getActiveFile()) this.scheduleNoteCheck(300);
       })
+    );
+
+    // "Today" and overdue colours move on at midnight even if nothing else
+    // happens in the panel.
+    this.today = localToday();
+    this.registerInterval(
+      window.setInterval(() => {
+        if (localToday() === this.today) return;
+        this.today = localToday();
+        this.panels().forEach((view) => view.renderLists());
+      }, 60 * 1000)
     );
   }
 
   onunload() {
+    window.clearTimeout(this.noteCheckTimer);
     // Stops a sign-in that is still waiting for the user.
     if (this.signInModal) this.signInModal.close();
+  }
+
+  scheduleNoteCheck(delay) {
+    window.clearTimeout(this.noteCheckTimer);
+    this.noteCheckTimer = window.setTimeout(() => {
+      this.panels().forEach((view) => view.updateNoteMatches());
+    }, delay);
   }
 
   panels() {
@@ -127,7 +148,9 @@ module.exports = class TodoPanelPlugin extends Plugin {
 
   signOut() {
     this.auth.signOut();
+    this.saveListCache(null);
     this.panels().forEach((view) => view.clear());
+    this.refreshSettingTab();
     new Notice("Signed out of Microsoft.");
   }
 
@@ -136,6 +159,37 @@ module.exports = class TodoPanelPlugin extends Plugin {
     const who = this.auth.account ? ` as ${this.auth.account}` : "";
     new Notice(`Signed in to Microsoft${who}.`);
     this.panels().forEach((view) => view.refresh());
+    this.refreshSettingTab();
+  }
+
+  // Redraws the settings tab if it is open, so it shows the new sign-in state.
+  refreshSettingTab() {
+    if (this.settingTab && this.settingTab.containerEl.isConnected) this.settingTab.display();
+  }
+
+  // ── list cache ──
+
+  loadListCache() {
+    try {
+      const cached = this.app.loadLocalStorage(LIST_CACHE_KEY);
+      if (!cached || !Array.isArray(cached.lists)) return null;
+      // Only the account that fetched them may see them.
+      if (!this.auth.signedIn || cached.account !== this.auth.account) return null;
+      return cached;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  saveListCache(lists) {
+    try {
+      this.app.saveLocalStorage(
+        LIST_CACHE_KEY,
+        lists ? { account: this.auth.account, fetchedAt: Date.now(), lists } : null
+      );
+    } catch (_) {
+      // A full or unavailable local storage only costs the instant start.
+    }
   }
 
   // The Markdown a task becomes when dropped or inserted.
@@ -208,8 +262,11 @@ class TodoPanelView extends ItemView {
     this.lists = [];
     this.filter = "";
     this.loading = false;
+    this.refreshQueued = false;
     this.error = null;
     this.fetchedAt = null;
+    // The note text the "in note" markers were last computed from.
+    this.checkedNoteKey = null;
   }
 
   getViewType() {
@@ -263,34 +320,61 @@ class TodoPanelView extends ItemView {
 
     this.statusEl = root.createDiv({ cls: "sb-todo-status" });
     this.listsEl = root.createDiv();
+
+    // Show the lists from last time straight away, then refresh them.
+    const cached = this.plugin.loadListCache();
+    if (cached) {
+      this.lists = cached.lists;
+      this.fetchedAt = new Date(cached.fetchedAt);
+    }
     this.renderLists();
+
     // Fetching takes a few seconds. Obsidian waits for onOpen while it
-    // restores the workspace, so start the fetch only once the layout is ready
-    // and never wait for it here: startup and editing stay unblocked, and the
-    // panel shows "Loading tasks…" until the tasks arrive.
+    // restores the workspace, so the fetch starts only once the layout is
+    // ready and the app is idle, and is never awaited here: startup and
+    // editing stay unblocked.
     this.app.workspace.onLayoutReady(() => {
-      this.refresh();
+      const start = () => this.refresh();
+      if (window.requestIdleCallback) window.requestIdleCallback(start, { timeout: 3000 });
+      else window.setTimeout(start, 500);
     });
   }
 
   async refresh() {
-    if (this.loading) return;
+    // A refresh asked for while one runs (say, right after signing in again)
+    // runs once the current one ends, rather than being dropped.
+    if (this.loading) {
+      this.refreshQueued = true;
+      return;
+    }
     if (!this.plugin.auth.signedIn) {
       this.clear();
       return;
     }
+    const auth = this.plugin.auth;
+    const epoch = auth.epoch;
     this.loading = true;
     this.error = null;
     this.renderStatus();
     try {
-      this.lists = await this.plugin.fetchLists();
-      this.fetchedAt = new Date();
+      const lists = await this.plugin.fetchLists();
+      // Signed out, or into another account, while this was loading: these
+      // lists belong to a session that no longer exists.
+      if (auth.epoch === epoch) {
+        this.lists = lists;
+        this.fetchedAt = new Date();
+        this.plugin.saveListCache(lists);
+      }
     } catch (e) {
-      this.error = e.message;
-      if (!this.plugin.auth.signedIn) this.lists = [];
+      if (auth.epoch === epoch) this.error = e.message;
     } finally {
       this.loading = false;
+      if (!auth.signedIn) this.lists = [];
       this.renderLists();
+    }
+    if (this.refreshQueued) {
+      this.refreshQueued = false;
+      this.refresh();
     }
   }
 
@@ -299,6 +383,7 @@ class TodoPanelView extends ItemView {
     this.lists = [];
     this.fetchedAt = null;
     this.error = null;
+    this.checkedNoteKey = null;
     this.renderLists();
   }
 
@@ -312,7 +397,7 @@ class TodoPanelView extends ItemView {
       const button = box.createEl("button", { cls: "mod-cta", text: "Sign in" });
       button.addEventListener("click", () => this.plugin.signIn());
     } else if (this.loading) {
-      this.statusEl.setText("Loading tasks…");
+      this.statusEl.setText(this.fetchedAt ? "Refreshing tasks…" : "Loading tasks…");
     } else if (this.error) {
       this.statusEl.createDiv({ cls: "sb-todo-error", text: this.error });
     } else if (this.fetchedAt) {
@@ -401,8 +486,14 @@ class TodoPanelView extends ItemView {
     this.listsEl.empty();
     if (this.completedEl) {
       const on = this.plugin.settings.showCompleted;
+      const days = Number(this.plugin.settings.completedDays) || 0;
+      // With no completed tasks loaded the toggle would do nothing.
+      this.completedEl.toggleClass("is-hidden", days === 0);
       this.completedEl.toggleClass("is-active", on);
-      this.completedEl.setAttr("aria-label", on ? "Hide completed tasks" : "Show completed tasks (last 7 days)");
+      this.completedEl.setAttr(
+        "aria-label",
+        on ? "Hide completed tasks" : `Show completed tasks (last ${days} day${days === 1 ? "" : "s"})`
+      );
       this.completedEl.setAttr("aria-pressed", String(on));
       setIcon(this.completedEl, "circle-check");
     }
@@ -420,6 +511,9 @@ class TodoPanelView extends ItemView {
       details.open = !collapsed.has(group.key);
       details.addEventListener("toggle", () => {
         const set = this.collapsedSet();
+        // Setting `open` from code also fires "toggle", one per group on every
+        // render; only a real change by the user is saved.
+        if (details.open === !set.has(group.key)) return;
         if (details.open) set.delete(group.key);
         else set.add(group.key);
         this.setCollapsed(set);
@@ -439,7 +533,10 @@ class TodoPanelView extends ItemView {
         this.renderTask(details, task, list, today, this.tab === "dates");
       }
     }
+    for (const el of this.listsEl.querySelectorAll(".sb-todo-list")) this.markGroupNoteMatches(el);
     this.updateToggleAll();
+    // Rows were marked against the note as last read; this re-reads it only
+    // if the active note changed since.
     this.updateNoteMatches();
   }
 
@@ -498,6 +595,14 @@ class TodoPanelView extends ItemView {
   // without rebuilding the panel, so scrolling and open groups stay put.
   async updateNoteMatches() {
     const note = await this.plugin.activeNote();
+    // Typing, saving and switching tabs fire often; skip the work when the
+    // note and the settings that shape matching are what they were.
+    const s = this.plugin.settings;
+    const key = note
+      ? [note.file ? note.file.path : "", s.template, s.dueFormat, s.linkFormat, s.dailyNoteFormat, note.text].join("\u0000")
+      : "";
+    if (key === this.checkedNoteKey) return;
+    this.checkedNoteKey = key;
     this.noteLines = note ? noteTaskLines(note.text) : null;
     this.noteName = note && note.file ? note.file.basename : "";
     const refDate = (note && this.plugin.dailyNoteDate(note.file)) || null;
@@ -545,7 +650,7 @@ class TodoPanelView extends ItemView {
   inNote(task, list) {
     const lines = this.noteLines;
     if (!lines) return null;
-    const title = normalizeText(task.title);
+    const title = normalizedTitle(task);
     if (title && lines.titles.has(title)) return lines.titles.get(title) ? "checked" : "open";
     const rendered = this.plugin.renderTask(task, list).trim();
     return lines.raw.has(rendered) ? "open" : null;
@@ -577,10 +682,7 @@ class TodoPanelSettingTab extends PluginSettingTab {
         .setName(auth.account ? `Signed in as ${auth.account}` : "Signed in")
         .setDesc("The sign-in is kept in Obsidian's secret storage on this device, never in the vault.")
         .addButton((button) =>
-          button.setButtonText("Sign out").onClick(() => {
-            this.plugin.signOut();
-            this.display();
-          })
+          button.setButtonText("Sign out").onClick(() => this.plugin.signOut())
         );
     } else {
       account
@@ -600,19 +702,19 @@ class TodoPanelSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName(name)
         .setDesc(desc)
-        .addText((text) =>
-          text
-            .setPlaceholder(placeholder)
-            .setValue(s[key])
-            .onChange(async (value) => {
-              s[key] = value.trim();
-              await this.plugin.saveSettings();
-              if (auth.signedIn && !auth.matchesSettings()) {
-                this.plugin.signOut();
-                this.display();
-              }
-            })
-        );
+        .addText((text) => {
+          text.setPlaceholder(placeholder).setValue(s[key]);
+          // Applied when the field is left, not per keystroke: a half-typed
+          // ID would otherwise sign out and redraw the tab mid-word.
+          text.inputEl.addEventListener("change", async () => {
+            const value = text.getValue().trim();
+            if (value === s[key]) return;
+            const wasSignedIn = auth.signedIn;
+            s[key] = value;
+            await this.plugin.saveSettings();
+            if (wasSignedIn && !auth.matchesSettings()) this.plugin.signOut();
+          });
+        });
     authSetting(
       "Client ID",
       "The Application (client) ID of the app you registered in Microsoft Entra. See the README.",
@@ -637,15 +739,16 @@ class TodoPanelSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Completed tasks to load (days)")
       .setDesc("How far back the show-completed toggle reaches. 0 loads no completed tasks.")
-      .addText((text) =>
-        text.setValue(String(s.completedDays)).onChange(async (value) => {
-          const days = parseInt(value, 10);
-          if (Number.isFinite(days) && days >= 0) {
-            s.completedDays = days;
-            await this.plugin.saveSettings();
-          }
-        })
-      );
+      .addText((text) => {
+        text.setValue(String(s.completedDays));
+        text.inputEl.addEventListener("change", async () => {
+          const days = parseInt(text.getValue(), 10);
+          if (!Number.isFinite(days) || days < 0 || days === s.completedDays) return;
+          s.completedDays = days;
+          await this.plugin.saveSettings();
+          this.plugin.panels().forEach((view) => view.refresh());
+        });
+      });
     new Setting(containerEl)
       .setName("Daily note date format")
       .setDesc(
@@ -722,10 +825,29 @@ const TRAILING_NOISE = new RegExp(
     "\\[[^\\]]*\\]\\([^)]*\\)" + // Markdown link
     "|\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{1,2}:\\d{2})?" + // 2026-11-20, optional time
     "|\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}" + // 20/11/2026, 20.11.26
-    "|[\\p{Extended_Pictographic}\\u2190-\\u21FF\\u2B00-\\u2BFF\\uFE0F\\u200D]+" + // emojis and arrows
+    // One symbol per repetition: a "+" here as well would nest two
+    // quantifiers and make long emoji runs backtrack for seconds.
+    "|[\\p{Extended_Pictographic}\\u2190-\\u21FF\\u2B00-\\u2BFF\\uFE0F\\u200D]" + // emojis and arrows
     "))+\\s*$",
   "u"
 );
+
+// normalizeText of a task's title, computed once per fetched task.
+const titleCache = new WeakMap();
+function normalizedTitle(task) {
+  if (!titleCache.has(task)) titleCache.set(task, normalizeText(task.title));
+  return titleCache.get(task);
+}
+
+// A short, stable lowercase hex hash (FNV-1a), for IDs derived from names.
+function hashString(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
 
 function normalizeText(text) {
   return (text || "").replace(TRAILING_NOISE, "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -771,16 +893,20 @@ class MicrosoftAuth {
   constructor(plugin) {
     this.plugin = plugin;
     this.refreshing = null;
+    // Bumped whenever a session ends or a new one begins, so token responses
+    // and task fetches started under an older session are thrown away.
+    this.epoch = 0;
+    this.secretId = `${SESSION_SECRET_PREFIX}-${hashString(plugin.app.vault.getName())}`;
     this.session = this.loadSession();
-    if (this.session && !this.matchesSettings()) this.signOut();
   }
 
   get settings() {
     return this.plugin.settings;
   }
 
+  // A stored session counts only for the client ID and tenant now set.
   get signedIn() {
-    return Boolean(this.session && this.session.refresh_token);
+    return Boolean(this.session && this.session.refresh_token && this.matchesSettings());
   }
 
   get account() {
@@ -800,8 +926,13 @@ class MicrosoftAuth {
     return (this.settings.tenant || "").trim() || "common";
   }
 
-  endpoint(path) {
-    return `https://login.microsoftonline.com/${encodeURIComponent(this.tenant())}/oauth2/v2.0/${path}`;
+  // The app and directory a request is made for, fixed when it starts.
+  context() {
+    return { clientId: this.settings.clientId.trim(), tenant: this.tenant(), epoch: this.epoch };
+  }
+
+  endpoint(path, tenant = this.tenant()) {
+    return `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/${path}`;
   }
 
   scope() {
@@ -812,9 +943,17 @@ class MicrosoftAuth {
   // ── session storage ──
 
   loadSession() {
+    const store = this.plugin.app.secretStorage;
     try {
-      const store = this.plugin.app.secretStorage;
-      const raw = store ? store.getSecret(SESSION_SECRET_ID) : this.plugin.app.loadLocalStorage(SESSION_SECRET_ID);
+      let raw = store.getSecret(this.secretId);
+      if (!raw) {
+        // Move a session saved by 1.0.3 or earlier under the legacy ID.
+        raw = store.getSecret(SESSION_SECRET_PREFIX);
+        if (raw) {
+          store.setSecret(this.secretId, raw);
+          store.setSecret(SESSION_SECRET_PREFIX, "");
+        }
+      }
       return raw ? JSON.parse(raw) : null;
     } catch (_) {
       return null;
@@ -823,44 +962,49 @@ class MicrosoftAuth {
 
   saveSession(session) {
     this.session = session;
-    const raw = session ? JSON.stringify(session) : "";
-    const store = this.plugin.app.secretStorage;
     // Secret storage has no delete; an empty value reads back as signed out.
-    if (store) store.setSecret(SESSION_SECRET_ID, raw);
-    else this.plugin.app.saveLocalStorage(SESSION_SECRET_ID, raw || null);
+    this.plugin.app.secretStorage.setSecret(this.secretId, session ? JSON.stringify(session) : "");
   }
 
   signOut() {
+    this.epoch++;
     this.saveSession(null);
   }
 
   // ── device code flow ──
 
   async startDeviceFlow() {
-    const res = await postForm(this.endpoint("devicecode"), {
-      client_id: this.settings.clientId.trim(),
+    const ctx = this.context();
+    const res = await postForm(this.endpoint("devicecode", ctx.tenant), {
+      client_id: ctx.clientId,
       scope: this.scope(),
     });
     if (res.status !== 200) throw new Error(describeAuthError(res.json));
-    return res.json;
+    // The token poll must use the same app and directory as the code.
+    return { ...res.json, ctx };
   }
 
   // Polls until the user finishes signing in. `cancel` is an object whose
   // `cancelled` flag stops the loop, for a closed dialog or an unloaded plugin.
   async completeDeviceFlow(flow, cancel) {
+    const ctx = flow.ctx || this.context();
     let interval = Math.max(1, Number(flow.interval) || 5);
     const deadline = Date.now() + (Number(flow.expires_in) || 900) * 1000;
     while (!cancel.cancelled) {
       await sleep(interval * 1000);
       if (cancel.cancelled) break;
       if (Date.now() > deadline) throw new Error("The sign-in code expired. Start again.");
-      const res = await postForm(this.endpoint("token"), {
+      const res = await postForm(this.endpoint("token", ctx.tenant), {
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        client_id: this.settings.clientId.trim(),
+        client_id: ctx.clientId,
         device_code: flow.device_code,
       });
+      // Closed or unloaded while that request was out: stay signed out.
+      if (cancel.cancelled) break;
       if (res.status === 200) {
-        this.storeTokens(res.json);
+        // A new session: anything started under the old one is now stale.
+        this.epoch++;
+        this.storeTokens(res.json, ctx);
         return;
       }
       const error = res.json && res.json.error;
@@ -876,12 +1020,12 @@ class MicrosoftAuth {
     throw new Error("Sign-in cancelled.");
   }
 
-  storeTokens(tokens) {
+  storeTokens(tokens, ctx) {
     const previous = this.session || {};
     const claims = jwtClaims(tokens.id_token);
     this.saveSession({
-      client_id: this.settings.clientId.trim(),
-      tenant: this.tenant(),
+      client_id: ctx.clientId,
+      tenant: ctx.tenant,
       access_token: tokens.access_token,
       // Microsoft rotates refresh tokens; keep the newest one.
       refresh_token: tokens.refresh_token || previous.refresh_token,
@@ -906,18 +1050,22 @@ class MicrosoftAuth {
       });
     }
     await this.refreshing;
+    if (!this.signedIn) throw new NotSignedInError("Not signed in to Microsoft.");
     return this.session.access_token;
   }
 
   async refresh() {
-    const res = await postForm(this.endpoint("token"), {
+    const ctx = { clientId: this.session.client_id, tenant: this.session.tenant, epoch: this.epoch };
+    const res = await postForm(this.endpoint("token", ctx.tenant), {
       grant_type: "refresh_token",
-      client_id: this.settings.clientId.trim(),
+      client_id: ctx.clientId,
       refresh_token: this.session.refresh_token,
       scope: this.scope(),
     });
+    // Signed out while that request was out: do not bring the session back.
+    if (ctx.epoch !== this.epoch) throw new NotSignedInError("Not signed in to Microsoft.");
     if (res.status === 200) {
-      this.storeTokens(res.json);
+      this.storeTokens(res.json, ctx);
       return;
     }
     const error = res.json && res.json.error;
@@ -1099,10 +1247,12 @@ async function fetchTodoLists(auth, completedDays) {
 
 function taskFilter(completedDays) {
   if (completedDays <= 0) return "status ne 'completed'";
+  // To Do sends a completion day as that bare date at midnight, so compare
+  // with the local calendar date, not a UTC instant.
   const since = new Date();
-  since.setHours(0, 0, 0, 0);
   since.setDate(since.getDate() - completedDays);
-  const stamp = since.toISOString().slice(0, 19);
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${since.getFullYear()}-${pad(since.getMonth() + 1)}-${pad(since.getDate())}T00:00:00`;
   return `status ne 'completed' or completedDateTime/dateTime ge '${stamp}'`;
 }
 

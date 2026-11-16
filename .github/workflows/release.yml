@@ -28,13 +28,16 @@ jobs:
           npm run build
           npm test
 
-      - name: Check the tag matches manifest.json
+      - name: Check the tag matches the version files
         run: |
-          version=$(node -p "require('./manifest.json').version")
-          if [ "$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match manifest version $version" >&2
-            exit 1
-          fi
+          for file in manifest.json package.json; do
+            version=$(node -p "require('./$file').version")
+            if [ "$version" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match $file version $version" >&2
+              exit 1
+            fi
+          done
+          node -e "if (!require('./versions.json')[process.argv[1]]) { console.error('versions.json has no entry for ' + process.argv[1]); process.exit(1) }" "$GITHUB_REF_NAME"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2

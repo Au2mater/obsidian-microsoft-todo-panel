@@ -190,6 +190,10 @@
 }
 
 /* Compact on/off toggle for completed tasks. */
+.sb-todo-toggle.is-hidden {
+  display: none;
+}
+
 .sb-todo-toggle.is-active {
   color: var(--text-on-accent);
   background: var(--interactive-accent);

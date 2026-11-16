@@ -19,11 +19,23 @@ class Plugin {
         getActiveFile: () => null,
         onLayoutReady: (fn) => (global.__layoutReady = fn),
       },
-      vault: { on: () => ({}) },
+      vault: { on: () => ({}), getName: () => "Test vault" },
       secrets: store,
+      local: {},
+      loadLocalStorage(key) {
+        return this.local[key] ?? null;
+      },
+      saveLocalStorage(key, value) {
+        if (value === null) delete this.local[key];
+        else this.local[key] = JSON.parse(JSON.stringify(value));
+      },
     };
   }
   registerEvent() {}
+  registerInterval(id) {
+    clearInterval(id);
+    return id;
+  }
   registerView(type, factory) {
     global.__viewFactory = factory;
   }
