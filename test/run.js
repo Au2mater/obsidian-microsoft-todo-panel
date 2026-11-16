@@ -16,13 +16,13 @@ Module._resolveFilename = function (request, ...rest) {
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine } = TodoPanelPlugin.__internals;
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks } = TodoPanelPlugin.__internals;
 
 global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout() {}, setInterval, clearInterval };
 global.atob = global.atob || ((s) => Buffer.from(s, "base64").toString("binary"));
@@ -445,6 +445,16 @@ test("the in-note filter shows only the tasks the active note holds", async () =
   assert.strictEqual(view.inNoteIds(), "a");
 });
 
+test("links in task notes are found, without trailing punctuation", () => {
+  const parts = splitLinks("See https://example.com/a?b=1. Also (https://x.org/y) and https://w.io/p_(1)!");
+  assert.deepStrictEqual(
+    parts.filter((p) => p.url).map((p) => p.url),
+    ["https://example.com/a?b=1", "https://x.org/y", "https://w.io/p_(1)"]
+  );
+  assert.strictEqual(parts.map((p) => p.text).join(""), "See https://example.com/a?b=1. Also (https://x.org/y) and https://w.io/p_(1)!");
+  assert.deepStrictEqual(splitLinks("no links"), [{ text: "no links" }]);
+});
+
 test("HTML task notes become plain text", async () => {
   const plugin = await signedInPlugin();
   global.__handler = (req) => {
@@ -452,13 +462,13 @@ test("HTML task notes become plain text", async () => {
     return {
       body: {
         value: [
-          { id: "t", title: "T", status: "notStarted", body: { contentType: "html", content: "<p>Call <b>Ann</b> &amp; Bo</p><p>Room&nbsp;4 &lt;3</p>" } },
+          { id: "t", title: "T", status: "notStarted", body: { contentType: "html", content: '<p>Call <b>Ann</b> &amp; Bo</p><p>Room&nbsp;4 &lt;3 <a href="https://example.com/doc">the doc</a></p>' } },
         ],
       },
     };
   };
   const lists = await plugin.fetchLists();
-  assert.strictEqual(lists[0].tasks[0].notes, "Call Ann & Bo\nRoom 4 <3");
+  assert.strictEqual(lists[0].tasks[0].notes, "Call Ann & Bo\nRoom 4 <3 the doc (https://example.com/doc)");
 });
 
 test("auth errors are trimmed and get a setup hint", () => {

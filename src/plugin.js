@@ -640,7 +640,12 @@ class TodoPanelView extends ItemView {
   renderNotes(body, metaEl, task) {
     this.openNotes = this.openNotes || new Set();
     const toggle = metaEl.createEl("button", { cls: "sb-todo-notes-toggle", text: "Notes" });
-    const notes = body.createDiv({ cls: "sb-todo-notes", text: task.notes });
+    const notes = body.createDiv({ cls: "sb-todo-notes" });
+    // Web links in the notes are clickable and open in the browser.
+    for (const part of splitLinks(task.notes)) {
+      if (part.url) notes.createEl("a", { cls: "external-link", text: part.text, href: part.url, attr: { target: "_blank", rel: "noopener" } });
+      else notes.appendText(part.text);
+    }
     const show = (open) => {
       notes.toggleClass("is-hidden", !open);
       toggle.toggleClass("is-active", open);
@@ -1374,6 +1379,26 @@ function localDayFromUtc(value) {
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
+// Splits plain text into text and web-link parts, for showing links as links.
+// Punctuation that ends a sentence is not part of the link, and neither is a
+// closing bracket the link did not open.
+function splitLinks(text) {
+  const parts = [];
+  const pattern = /https?:\/\/[^\s<>"]+/g;
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(text || "")) !== null) {
+    let url = match[0];
+    while (/[.,;:!?'\]]$/.test(url) || (url.endsWith(")") && !url.includes("("))) url = url.slice(0, -1);
+    if (match.index > last) parts.push({ text: text.slice(last, match.index) });
+    parts.push({ text: url, url });
+    last = match.index + url.length;
+    pattern.lastIndex = last;
+  }
+  if (last < (text || "").length) parts.push({ text: text.slice(last) });
+  return parts;
+}
+
 // After a drop, the editor selects the text it inserted. If that text landed
 // inside a line with other text, take it out again and put it on a new line
 // below that line, or above it when dropped at the line's start, so no line
@@ -1411,6 +1436,11 @@ function placeOnOwnLine(editor, text) {
 // HTML): line breaks kept, tags dropped, common entities decoded.
 function htmlToText(html) {
   return String(html || "")
+    // A link keeps its address: "text (https://…)", or the address alone.
+    .replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (whole, href, inner) => {
+      const label = inner.replace(/<[^>]*>/g, "").trim();
+      return !label || label === href ? href : `${label} (${href})`;
+    })
     .replace(/<(br|\/p|\/div|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
     .replace(/<[^>]*>/g, "")
     .replace(/&nbsp;/g, " ")
