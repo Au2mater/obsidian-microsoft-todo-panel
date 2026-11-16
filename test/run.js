@@ -326,6 +326,46 @@ test("the completed filter starts at local midnight N days ago", () => {
   assert.strictEqual(taskFilter(0), "status ne 'completed'");
 });
 
+test("clicking a task the note holds selects its line; others are inserted", async () => {
+  const plugin = await signedInPlugin();
+  const text = ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "- [x] Book venue"];
+  const calls = [];
+  const editor = {
+    getValue: () => text.join("\n"),
+    getLine: (n) => text[n],
+    getCursor: () => ({ line: 1, ch: 0 }),
+    setSelection: (from, to) => calls.push(["select", from, to]),
+    scrollIntoView: () => calls.push(["scroll"]),
+    focus: () => calls.push(["focus"]),
+    replaceRange: (value) => calls.push(["insert", value]),
+    setCursor: () => {},
+  };
+  plugin.app.workspace.activeEditor = { editor };
+  const list = { id: "L", name: "Inbox" };
+  plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
+  assert.deepStrictEqual(calls[0], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
+  calls.length = 0;
+  plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
+  assert.strictEqual(calls[0][0], "insert");
+  assert.strictEqual(calls[0][1], "- [ ] Something new");
+});
+
+test("HTML task notes become plain text", async () => {
+  const plugin = await signedInPlugin();
+  global.__handler = (req) => {
+    if (req.url.endsWith("/me/todo/lists")) return { body: { value: [{ id: "L1", displayName: "Inbox" }] } };
+    return {
+      body: {
+        value: [
+          { id: "t", title: "T", status: "notStarted", body: { contentType: "html", content: "<p>Call <b>Ann</b> &amp; Bo</p><p>Room&nbsp;4 &lt;3</p>" } },
+        ],
+      },
+    };
+  };
+  const lists = await plugin.fetchLists();
+  assert.strictEqual(lists[0].tasks[0].notes, "Call Ann & Bo\nRoom 4 <3");
+});
+
 test("auth errors are trimmed and get a setup hint", () => {
   const message = describeAuthError({
     error_description: "AADSTS50059: No tenant-identifying information found. Trace ID: abc Correlation ID: def",
@@ -344,7 +384,10 @@ test("note matching ignores case, indentation, whitespace and trailing emojis, d
       "- [ ] Release 2026 roadmap",
     ].join("\n")
   );
-  const state = (title) => (lines.titles.has(normalizeText(title)) ? (lines.titles.get(normalizeText(title)) ? "checked" : "open") : null);
+  const state = (title) => {
+    const match = lines.titles.get(normalizeText(title));
+    return match ? (match.checked ? "checked" : "open") : null;
+  };
   assert.strictEqual(state("Send slides"), "checked");
   assert.strictEqual(state("book the venue"), "open");
   assert.strictEqual(state("Forwarded task"), "open", "[>] is not checked");

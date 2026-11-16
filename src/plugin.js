@@ -233,16 +233,32 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return null;
   }
 
-  // Click-to-insert: put the task on its own line at the cursor of the note
-  // that was active last. activeEditor survives focus moving to the sidebar.
-  insertIntoActiveNote(text) {
-    const editor =
-      this.app.workspace.activeEditor?.editor ||
-      this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+  // Clicking a task: when the note being worked in already holds it, select
+  // that line and scroll to it; otherwise insert the task at the cursor.
+  showOrInsert(task, list) {
+    const active = this.app.workspace.activeEditor;
+    const editor = (active && active.editor) || this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
     if (!editor) {
       new Notice("Click into a note first, then click the task.");
       return;
     }
+    // Read the note as it is now, not as the markers last saw it.
+    const lines = noteTaskLines(editor.getValue());
+    const line = findTaskLine(lines, normalizedTitle(task), this.renderTask(task, list).trim());
+    if (line < 0) {
+      this.insertIntoEditor(editor, this.renderTask(task, list));
+      return;
+    }
+    const from = { line, ch: 0 };
+    const to = { line, ch: editor.getLine(line).length };
+    if (active && active.leaf) this.app.workspace.setActiveLeaf(active.leaf, { focus: true });
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, true);
+    editor.focus();
+  }
+
+  // Puts the task on its own line at the cursor.
+  insertIntoEditor(editor, text) {
     const cursor = editor.getCursor();
     const line = editor.getLine(cursor.line);
     if (line.trim() === "") {
@@ -574,14 +590,13 @@ class TodoPanelView extends ItemView {
       meta.push([`sb-todo-due${state}`, shortDate(task.due_date)]);
     }
     if (showList) meta.push(["sb-todo-list-name", list.name]);
-    if (task.notes) meta.push(["sb-todo-has-notes", "Notes"]);
     const metaEl = body.createDiv({ cls: "sb-todo-meta" });
     // Shown by CSS only while the active note already has this task.
     metaEl.createSpan({ cls: "sb-todo-in-note", text: "In note" });
     for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
+    if (task.notes) this.renderNotes(body, metaEl, task);
     row.sbEntry = { task, list };
     this.markNoteMatch(row);
-    if (task.notes) row.setAttr("title", task.notes);
 
     row.addEventListener("dragstart", (evt) => {
       const markdown = this.plugin.renderTask(task, list);
@@ -591,9 +606,32 @@ class TodoPanelView extends ItemView {
       row.addClass("is-dragging");
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
-    row.addEventListener("click", () => {
-      this.plugin.insertIntoActiveNote(this.plugin.renderTask(task, list));
+    // A task the note already holds is shown there; any other is inserted.
+    row.addEventListener("click", () => this.plugin.showOrInsert(task, list));
+  }
+
+  // A "Notes" toggle in the meta line that shows the task's notes under it.
+  // Which tasks have their notes open is kept while the panel is open.
+  renderNotes(body, metaEl, task) {
+    this.openNotes = this.openNotes || new Set();
+    const toggle = metaEl.createEl("button", { cls: "sb-todo-notes-toggle", text: "Notes" });
+    const notes = body.createDiv({ cls: "sb-todo-notes", text: task.notes });
+    const show = (open) => {
+      notes.toggleClass("is-hidden", !open);
+      toggle.toggleClass("is-active", open);
+      toggle.setAttr("aria-expanded", String(open));
+    };
+    show(this.openNotes.has(task.id));
+    toggle.addEventListener("click", (evt) => {
+      // Not a click on the task itself, which would insert or show it.
+      evt.stopPropagation();
+      const open = !this.openNotes.has(task.id);
+      if (open) this.openNotes.add(task.id);
+      else this.openNotes.delete(task.id);
+      show(open);
     });
+    // Selecting text in the notes should not insert the task either.
+    notes.addEventListener("click", (evt) => evt.stopPropagation());
   }
 
   // Re-reads the active note and marks the tasks it already contains,
@@ -656,7 +694,7 @@ class TodoPanelView extends ItemView {
     const lines = this.noteLines;
     if (!lines) return null;
     const title = normalizedTitle(task);
-    if (title && lines.titles.has(title)) return lines.titles.get(title) ? "checked" : "open";
+    if (title && lines.titles.has(title)) return lines.titles.get(title).checked ? "checked" : "open";
     const rendered = this.plugin.renderTask(task, list).trim();
     return lines.raw.has(rendered) ? "open" : null;
   }
@@ -804,20 +842,30 @@ class TodoPanelSettingTab extends PluginSettingTab {
 // The task-like lines of a note: each raw trimmed line, and each list item's
 // text reduced by normalizeText, mapped to whether any such line is checked.
 // Only [x] or [X] counts as checked; [<], [>], [-] and other marks do not.
+// Each also records the first line it is on, for jumping to it.
 function noteTaskLines(text) {
-  const raw = new Set();
+  const raw = new Map();
   const titles = new Map();
-  for (const line of (text || "").split(/\r?\n/)) {
+  (text || "").split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim();
-    if (!trimmed) continue;
-    raw.add(trimmed);
+    if (!trimmed) return;
+    if (!raw.has(trimmed)) raw.set(trimmed, index);
     const item = trimmed.match(/^(?:[-*+]|\d+[.)])\s+(?:\[(.)\]\s+)?(.*)$/);
-    if (!item) continue;
+    if (!item) return;
     const key = normalizeText(item[2]);
     const checked = item[1] === "x" || item[1] === "X";
-    titles.set(key, Boolean(titles.get(key)) || checked);
-  }
+    const seen = titles.get(key);
+    titles.set(key, { checked: Boolean(seen && seen.checked) || checked, line: seen ? seen.line : index });
+  });
   return { raw, titles };
+}
+
+// The line of the note that holds this task, or -1. Same matching as the
+// "in note" markers.
+function findTaskLine(lines, title, rendered) {
+  const match = title && lines.titles.get(title);
+  if (match) return match.line;
+  return lines.raw.has(rendered) ? lines.raw.get(rendered) : -1;
 }
 
 // What makes two task texts "the same": case, indentation and runs of
@@ -1274,7 +1322,7 @@ function taskView(task) {
     completed_date: task.completedDateTime && task.completedDateTime.dateTime
       ? task.completedDateTime.dateTime.slice(0, 10)
       : null,
-    notes: body.contentType === "text" ? (body.content || "").trim() : "",
+    notes: body.contentType === "html" ? htmlToText(body.content) : (body.content || "").trim(),
     categories: task.categories || [],
   };
 }
@@ -1290,6 +1338,23 @@ function localDayFromUtc(value) {
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
+
+// Plain text from a task's HTML notes, for display as text only (never as
+// HTML): line breaks kept, tags dropped, common entities decoded.
+function htmlToText(html) {
+  return String(html || "")
+    .replace(/<(br|\/p|\/div|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 async function postForm(url, fields) {
   const res = await requestUrl({
