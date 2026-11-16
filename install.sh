@@ -6,5 +6,6 @@ config_dir="${1:?usage: ./install.sh <vault config folder, e.g. vault/.obsidian>
 target="$config_dir/plugins/microsoft-todo-panel"
 mkdir -p "$target"
 here="$(cd "$(dirname "$0")" && pwd)"
+node "$here/scripts/build.js" >/dev/null
 cp "$here/manifest.json" "$here/main.js" "$here/styles.css" "$target/"
 echo "Installed into $target — reload Obsidian or toggle the plugin to pick up changes."

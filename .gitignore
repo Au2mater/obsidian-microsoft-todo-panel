@@ -1,2 +1,4 @@
 node_modules/
 .DS_Store
+# Built from src/main.js by npm run build
+/main.js

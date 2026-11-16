@@ -136,11 +136,13 @@ collapse.
 
 ## Development
 
-Plain JavaScript, no build step. To try a change, copy it into a vault:
+Plain JavaScript with no dependencies. The source is `src/main.js`;
+`npm run build` checks it and writes `main.js`, the file Obsidian loads. To
+try a change, build it into a vault:
 
 ```bash
-./install.sh "/path/to/vault/.obsidian"
-node test/run.js
+./install.sh "/path/to/vault/.obsidian"   # builds, then copies
+npm test
 ```
 
 The tests load `main.js` against a small stand-in for the Obsidian API and
