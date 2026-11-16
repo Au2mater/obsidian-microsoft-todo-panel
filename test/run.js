@@ -218,6 +218,18 @@ test("opening the panel does not wait for tasks to load", async () => {
   finishFetch([]);
 });
 
+test("an expired sign-in found while loading tasks is shown in the panel", async () => {
+  const plugin = await signedInPlugin();
+  plugin.saveListCache([{ id: "L1", name: "Inbox", tasks: [] }]);
+  plugin.auth.session.expires_at = 0;
+  global.__handler = () => ({ status: 400, body: { error: "invalid_grant", error_description: "AADSTS70008: expired." } });
+  const view = global.__viewFactory({});
+  await view.refresh();
+  assert.match(view.error || "", /sign-in has expired/);
+  assert.deepStrictEqual(view.lists, []);
+  assert.strictEqual(plugin.app.loadLocalStorage("microsoft-todo-panel-lists"), null);
+});
+
 test("a session under the legacy secret ID moves to this vault's ID", async () => {
   const plugin = await signedInPlugin();
   const session = plugin.app.secrets[plugin.auth.secretId];

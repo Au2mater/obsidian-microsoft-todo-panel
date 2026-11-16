@@ -366,7 +366,10 @@ class TodoPanelView extends ItemView {
         this.plugin.saveListCache(lists);
       }
     } catch (e) {
-      if (auth.epoch === epoch) this.error = e.message;
+      // An expired sign-in ends the session itself, which also changes the
+      // epoch; its message still needs showing, and its cached lists go.
+      if (e.expired) this.plugin.saveListCache(null);
+      if (auth.epoch === epoch || e.expired) this.error = e.message;
     } finally {
       this.loading = false;
       if (!auth.signedIn) this.lists = [];
@@ -1071,7 +1074,9 @@ class MicrosoftAuth {
     const error = res.json && res.json.error;
     if (error === "invalid_grant" || error === "interaction_required" || error === "invalid_client") {
       this.signOut();
-      throw new NotSignedInError(`Your Microsoft sign-in has expired. Sign in again. (${describeAuthError(res.json)})`);
+      const expired = new NotSignedInError(`Your Microsoft sign-in has expired. Sign in again. (${describeAuthError(res.json)})`);
+      expired.expired = true;
+      throw expired;
     }
     throw new Error(describeAuthError(res.json));
   }
