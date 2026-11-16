@@ -168,7 +168,12 @@
   font-weight: var(--font-semibold);
 }
 
+/* Open in the note: a hollow circle. Ticked off with [x]: a check. */
 .sb-todo-in-note::before {
+  content: "○ ";
+}
+
+.sb-todo-task.is-checked-in-note .sb-todo-in-note::before {
   content: "✓ ";
 }
 
@@ -178,7 +183,10 @@
 
 .sb-todo-task.is-in-note .sb-todo-marker {
   border-color: var(--color-green);
-  background: color-mix(in srgb, var(--color-green) 25%, transparent);
+}
+
+.sb-todo-task.is-checked-in-note .sb-todo-marker {
+  background: color-mix(in srgb, var(--color-green) 45%, transparent);
 }
 
 /* Compact on/off toggle for completed tasks. */

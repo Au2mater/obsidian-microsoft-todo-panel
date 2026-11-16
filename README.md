@@ -10,9 +10,10 @@ drag starts in this panel instead.
 - **Lists** and **By date** tabs: To Do's own lists, or Today, Later (earliest
   first), Earlier (earliest first) and No date.
 - One button expands or collapses every group.
-- A task the active note already contains is marked **In note**. Matching
-  ignores case, indentation, whitespace, the checkbox, and trailing emojis,
-  dates and links.
+- A task the active note already contains is marked **○ In note**, or
+  **✓ In note** once a matching line is ticked with `[x]` (`[<]`, `[>]` and
+  other marks do not count). Matching ignores case, indentation, whitespace,
+  the checkbox, and trailing emojis, dates and links.
 - A compact toggle shows the tasks completed in the last 7 days, struck
   through, after the open tasks of each group. Dropping one inserts `- [x]`.
 

@@ -426,7 +426,7 @@ class TodoPanelView extends ItemView {
     metaEl.createSpan({ cls: "sb-todo-in-note", text: "In note" });
     for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
     row.sbEntry = { task, list };
-    if (this.noteLines && this.inNote(task, list)) row.addClass("is-in-note");
+    this.markNoteMatch(row);
     if (task.notes) row.setAttr("title", task.notes);
 
     row.addEventListener("dragstart", (evt) => {
@@ -449,25 +449,31 @@ class TodoPanelView extends ItemView {
     this.noteLines = note ? noteTaskLines(note.text) : null;
     this.noteName = note && note.file ? note.file.basename : "";
     if (!this.listsEl) return;
-    for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) {
-      if (!row.sbEntry) continue;
-      const found = Boolean(this.noteLines) && this.inNote(row.sbEntry.task, row.sbEntry.list);
-      row.toggleClass("is-in-note", found);
-      const badge = row.querySelector(".sb-todo-in-note");
-      if (badge) badge.setAttr("title", found ? `Already in ${this.noteName}` : "");
-    }
+    for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) this.markNoteMatch(row);
   }
 
-  // A note line holds this task when, list marker and checkbox aside, it is
-  // the task's title (a due date or link after it allowed), or exactly what
-  // dropping the task would insert.
+  markNoteMatch(row) {
+    if (!row.sbEntry) return;
+    const state = this.inNote(row.sbEntry.task, row.sbEntry.list);
+    row.toggleClass("is-in-note", Boolean(state));
+    row.toggleClass("is-checked-in-note", state === "checked");
+    const badge = row.querySelector(".sb-todo-in-note");
+    if (!badge) return;
+    const where = this.noteName || "this note";
+    badge.setAttr("title", state === "checked" ? `Checked off in ${where}` : state ? `Already in ${where}` : "");
+  }
+
+  // Whether the active note holds this task: null when it does not, else
+  // "checked" when a matching line is ticked with [x], or "open". A line
+  // matches when, list marker and checkbox aside, it is the task's title (see
+  // normalizeText), or exactly what dropping the task would insert.
   inNote(task, list) {
     const lines = this.noteLines;
-    if (!lines) return false;
+    if (!lines) return null;
     const title = normalizeText(task.title);
-    if (title && lines.titles.has(title)) return true;
+    if (title && lines.titles.has(title)) return lines.titles.get(title) ? "checked" : "open";
     const rendered = this.plugin.renderTask(task, list).trim();
-    return lines.raw.has(rendered);
+    return lines.raw.has(rendered) ? "open" : null;
   }
 
   matches(task, list) {
@@ -552,16 +558,20 @@ function splitCommand(command) {
 }
 
 // The task-like lines of a note: each raw trimmed line, and each list item's
-// text reduced by normalizeText.
+// text reduced by normalizeText, mapped to whether any such line is checked.
+// Only [x] or [X] counts as checked; [<], [>], [-] and other marks do not.
 function noteTaskLines(text) {
   const raw = new Set();
-  const titles = new Set();
+  const titles = new Map();
   for (const line of (text || "").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     raw.add(trimmed);
-    const item = trimmed.match(/^(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?(.*)$/);
-    if (item) titles.add(normalizeText(item[1]));
+    const item = trimmed.match(/^(?:[-*+]|\d+[.)])\s+(?:\[(.)\]\s+)?(.*)$/);
+    if (!item) continue;
+    const key = normalizeText(item[2]);
+    const checked = item[1] === "x" || item[1] === "X";
+    titles.set(key, Boolean(titles.get(key)) || checked);
   }
   return { raw, titles };
 }
