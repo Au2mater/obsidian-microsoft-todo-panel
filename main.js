@@ -28,6 +28,9 @@ const DEFAULT_SETTINGS = {
   linkFormat: "https://to-do.office.com/tasks/id/{{id}}/details",
   hideEmptyLists: true,
   timeoutSeconds: 60,
+  // Panel state, kept between sessions.
+  tab: "lists",
+  collapsed: { lists: [], dates: ["date:none"] },
 };
 
 module.exports = class TodoPanelPlugin extends Plugin {
@@ -146,7 +149,6 @@ class TodoPanelView extends ItemView {
     this.plugin = plugin;
     this.lists = [];
     this.filter = "";
-    this.collapsed = new Set();
     this.loading = false;
     this.error = null;
     this.fetchedAt = null;
@@ -175,12 +177,25 @@ class TodoPanelView extends ItemView {
       attr: { placeholder: "Filter tasks…" },
     });
     search.addEventListener("input", () => {
+      // A filter opens every group with a match, using its own collapsed
+      // state, so clearing it brings the groups back as they were.
       this.filter = search.value.trim().toLowerCase();
+      this.filterCollapsed = new Set();
       this.renderLists();
     });
+    this.toggleAllEl = toolbar.createEl("button");
+    this.toggleAllEl.addEventListener("click", () => this.toggleAll());
     const refresh = toolbar.createEl("button", { attr: { "aria-label": "Refresh" } });
     setIcon(refresh, "refresh-cw");
     refresh.addEventListener("click", () => this.refresh());
+
+    const tabs = root.createDiv({ cls: "sb-todo-tabs", attr: { role: "tablist" } });
+    this.tabEls = {};
+    for (const [key, label] of [["lists", "Lists"], ["dates", "By date"]]) {
+      const tab = tabs.createEl("button", { cls: "sb-todo-tab", text: label, attr: { role: "tab" } });
+      tab.addEventListener("click", () => this.setTab(key));
+      this.tabEls[key] = tab;
+    }
 
     this.statusEl = root.createDiv({ cls: "sb-todo-status" });
     this.listsEl = root.createDiv();
@@ -218,32 +233,112 @@ class TodoPanelView extends ItemView {
     }
   }
 
+  get tab() {
+    return this.plugin.settings.tab === "dates" ? "dates" : "lists";
+  }
+
+  setTab(tab) {
+    this.plugin.settings.tab = tab;
+    this.plugin.saveSettings();
+    this.renderLists();
+  }
+
+  // Collapsed group keys for the current tab; a filter keeps its own set.
+  collapsedSet() {
+    if (this.filter) return this.filterCollapsed || (this.filterCollapsed = new Set());
+    const all = this.plugin.settings.collapsed || (this.plugin.settings.collapsed = {});
+    return new Set(all[this.tab] || []);
+  }
+
+  setCollapsed(set) {
+    if (this.filter) {
+      this.filterCollapsed = set;
+      return;
+    }
+    this.plugin.settings.collapsed = { ...this.plugin.settings.collapsed, [this.tab]: [...set] };
+    this.plugin.saveSettings();
+  }
+
+  toggleAll() {
+    const groups = this.groups();
+    const collapsed = this.collapsedSet();
+    const anyOpen = groups.some((g) => !collapsed.has(g.key));
+    this.setCollapsed(anyOpen ? new Set(groups.map((g) => g.key)) : new Set());
+    this.renderLists();
+  }
+
+  // The groups the current tab shows, each with its matching tasks in order.
+  groups() {
+    const entries = (list) =>
+      list.tasks.filter((task) => this.matches(task, list)).map((task) => ({ task, list }));
+
+    if (this.tab === "lists") {
+      return this.lists
+        .map((list) => ({ key: list.id, name: list.name, items: entries(list) }))
+        .filter((g) => g.items.length > 0 || (!this.filter && !this.plugin.settings.hideEmptyLists));
+    }
+
+    const today = localToday();
+    const all = this.lists.flatMap(entries);
+    const byTitle = (a, b) => a.task.title.localeCompare(b.task.title);
+    const byDue = (a, b) => a.task.due_date.localeCompare(b.task.due_date) || byTitle(a, b);
+    const important = (a, b) => (b.task.importance === "high") - (a.task.importance === "high");
+    return [
+      {
+        key: "date:today",
+        name: "Today",
+        items: all.filter((e) => e.task.due_date === today).sort((a, b) => important(a, b) || byTitle(a, b)),
+      },
+      { key: "date:later", name: "Later", items: all.filter((e) => e.task.due_date > today).sort(byDue) },
+      { key: "date:earlier", name: "Earlier", items: all.filter((e) => e.task.due_date && e.task.due_date < today).sort(byDue) },
+      { key: "date:none", name: "No date", items: all.filter((e) => !e.task.due_date).sort(byTitle) },
+    ].filter((g) => g.items.length > 0 || (!this.filter && g.key !== "date:none"));
+  }
+
   renderLists() {
     this.renderStatus();
     if (!this.listsEl) return;
     this.listsEl.empty();
-    const today = localToday();
-
-    for (const list of this.lists) {
-      const tasks = list.tasks.filter((task) => this.matches(task, list));
-      if (tasks.length === 0 && (this.filter || this.plugin.settings.hideEmptyLists)) continue;
-
-      const details = this.listsEl.createEl("details", { cls: "sb-todo-list" });
-      // A filter opens every list that has a match.
-      details.open = this.filter ? true : !this.collapsed.has(list.id);
-      details.addEventListener("toggle", () => {
-        if (this.filter) return;
-        if (details.open) this.collapsed.delete(list.id);
-        else this.collapsed.add(list.id);
-      });
-      const summary = details.createEl("summary", { text: list.name });
-      summary.createSpan({ cls: "sb-todo-count", text: String(tasks.length) });
-
-      for (const task of tasks) this.renderTask(details, task, list, today);
+    for (const [key, el] of Object.entries(this.tabEls || {})) {
+      el.toggleClass("is-active", key === this.tab);
+      el.setAttr("aria-selected", String(key === this.tab));
     }
+
+    const today = localToday();
+    const groups = this.groups();
+    const collapsed = this.collapsedSet();
+
+    for (const group of groups) {
+      const details = this.listsEl.createEl("details", { cls: "sb-todo-list" });
+      details.open = !collapsed.has(group.key);
+      details.addEventListener("toggle", () => {
+        const set = this.collapsedSet();
+        if (details.open) set.delete(group.key);
+        else set.add(group.key);
+        this.setCollapsed(set);
+        this.updateToggleAll();
+      });
+      const summary = details.createEl("summary", { text: group.name });
+      summary.createSpan({ cls: "sb-todo-count", text: String(group.items.length) });
+      if (group.items.length === 0) {
+        details.createDiv({ cls: "sb-todo-empty", text: "Nothing here" });
+      }
+      for (const { task, list } of group.items) {
+        this.renderTask(details, task, list, today, this.tab === "dates");
+      }
+    }
+    this.updateToggleAll();
   }
 
-  renderTask(parent, task, list, today) {
+  updateToggleAll() {
+    if (!this.toggleAllEl) return;
+    const collapsed = this.collapsedSet();
+    const anyOpen = this.groups().some((g) => !collapsed.has(g.key));
+    this.toggleAllEl.setAttr("aria-label", anyOpen ? "Collapse all" : "Expand all");
+    setIcon(this.toggleAllEl, anyOpen ? "chevrons-down-up" : "chevrons-up-down");
+  }
+
+  renderTask(parent, task, list, today, showList = false) {
     const row = parent.createDiv({ cls: "sb-todo-task", attr: { draggable: "true" } });
     // A marker per task, with wrapped title lines hanging beside it, so a
     // continuation line never looks like the start of the next task.
@@ -259,6 +354,7 @@ class TodoPanelView extends ItemView {
       const state = task.due_date < today ? " is-overdue" : task.due_date === today ? " is-today" : "";
       meta.push([`sb-todo-due${state}`, shortDate(task.due_date)]);
     }
+    if (showList) meta.push(["sb-todo-list-name", list.name]);
     if (task.notes) meta.push(["sb-todo-has-notes", "Notes"]);
     if (meta.length) {
       const metaEl = body.createDiv({ cls: "sb-todo-meta" });

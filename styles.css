@@ -116,3 +116,43 @@
 .sb-todo-flag {
   color: var(--text-error);
 }
+
+.sb-todo-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-m);
+  background: var(--background-modifier-hover);
+}
+
+.sb-todo-tab {
+  flex: 1;
+  padding: var(--size-4-1) var(--size-4-2);
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.sb-todo-tab.is-active {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-s);
+}
+
+.sb-todo-empty {
+  padding: var(--size-4-1) var(--size-4-2) var(--size-4-2);
+  font-size: var(--font-ui-small);
+  color: var(--text-faint);
+}
+
+.sb-todo-list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
