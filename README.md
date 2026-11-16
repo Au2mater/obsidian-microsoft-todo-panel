@@ -35,6 +35,8 @@ trademark of Microsoft.
 - **Network use:** the plugin talks only to Microsoft:
   `login.microsoftonline.com` to sign in and `graph.microsoft.com` to read
   your To Do lists and tasks. Nothing is sent anywhere else.
+- **Clipboard:** the sign-in dialog writes the sign-in code to the clipboard
+  when you select **Copy code**. The plugin never reads the clipboard.
 - **No telemetry, ads or payments.** Task data stays in memory while the panel
   is open and is not written to your vault unless you drag or click a task
   into a note.
@@ -143,3 +145,8 @@ node test/run.js
 
 The tests load `main.js` against a small stand-in for the Obsidian API and
 cover sign-in, token refresh, reading from Microsoft Graph and note matching.
+
+To release, bump `version` in `manifest.json` and `package.json`, add it to
+`versions.json`, commit, and push a tag with the same version (for example
+`1.0.1`). The release workflow tests the plugin, attests the build provenance
+of the release files and publishes the GitHub release.
