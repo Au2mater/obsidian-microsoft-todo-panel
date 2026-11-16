@@ -11,7 +11,7 @@ drag starts in this panel instead.
   first), Earlier (earliest first) and No date. With a daily note open, the
   sections are relative to that note's date, and Today is titled with the
   date instead (for example "Thu 12 Nov") unless it is today's note. The date
-  is read from the file name using the Daily notes plugin's format.
+  is read from the file name with the **Daily note date format** setting.
 - One button expands or collapses every group.
 - A task the active note already contains is marked **○ In note**, or
   **✓ In note** once a matching line is ticked with `[x]` (`[<]`, `[>]` and
@@ -24,6 +24,23 @@ drag starts in this panel instead.
 
 The plugin only reads your tasks. It never creates, changes or completes
 anything in To Do.
+
+This plugin is not made by or affiliated with Microsoft. Microsoft To Do is a
+trademark of Microsoft.
+
+## Disclosures
+
+- **Account required:** a Microsoft account (work, school or personal) with
+  Microsoft To Do, and an app registration you create yourself (see Setup).
+- **Network use:** the plugin talks only to Microsoft:
+  `login.microsoftonline.com` to sign in and `graph.microsoft.com` to read
+  your To Do lists and tasks. Nothing is sent anywhere else.
+- **No telemetry, ads or payments.** Task data stays in memory while the panel
+  is open and is not written to your vault unless you drag or click a task
+  into a note.
+- **Stored on your device:** the sign-in token, in Obsidian's secret storage
+  (see below). The client ID, tenant and other settings are in the plugin's
+  `data.json` in your vault.
 
 ## Setup
 
@@ -88,16 +105,16 @@ plugin cannot sign in there.
 
 ## Install
 
-Plain JavaScript, no build step. Copy `manifest.json`, `main.js` and
-`styles.css` into `<vault>/<config folder>/plugins/microsoft-todo-panel/`,
-then enable **Microsoft To Do Panel** under **Settings → Community plugins**. The config
-folder is `.obsidian` unless the vault overrides it.
-
-```bash
-./install.sh "/path/to/vault/.obsidian"
-```
-
 Requires Obsidian 1.11.4 or newer, for secret storage.
+
+- **From Obsidian:** search for "Microsoft To Do Panel" under **Settings →
+  Community plugins → Browse**, install and enable it.
+- **With BRAT:** add `Au2mater/obsidian-microsoft-todo-panel` in the BRAT
+  plugin to get the latest release.
+- **Manually:** download `main.js`, `manifest.json` and `styles.css` from the
+  [latest release](https://github.com/Au2mater/obsidian-microsoft-todo-panel/releases/latest)
+  into `<vault>/.obsidian/plugins/microsoft-todo-panel/`, then enable the
+  plugin under **Settings → Community plugins**.
 
 ## Settings
 
@@ -107,6 +124,7 @@ Requires Obsidian 1.11.4 or newer, for secret storage.
 | Tenant | `common` | Tenant ID, `common`, `organizations` or `consumers`. |
 | Permissions | `Tasks.Read` | Microsoft Graph permissions to ask for. |
 | Completed tasks to load (days) | `7` | How far back the show-completed toggle reaches. |
+| Daily note date format | `YYYY-MM-DD` | Moment.js format of daily note file names. |
 | Task template | `- [ ] {{title}} {{due}}` | `{{title}}`, `{{due}}`, `{{date}}`, `{{list}}`, `{{link}}`, `{{id}}` |
 | Due format | `📅 {{date}}` | `{{date}}` is YYYY-MM-DD. |
 | Link format | `https://to-do.office.com/tasks/id/{{id}}/details` | `{{id}}`, `{{list}}` |
@@ -116,7 +134,10 @@ collapse.
 
 ## Development
 
+Plain JavaScript, no build step. To try a change, copy it into a vault:
+
 ```bash
+./install.sh "/path/to/vault/.obsidian"
 node test/run.js
 ```
 

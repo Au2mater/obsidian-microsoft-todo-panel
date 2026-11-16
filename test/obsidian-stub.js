@@ -57,6 +57,7 @@ module.exports = {
   PluginSettingTab: Stub,
   Setting: Stub,
   setIcon() {},
+  moment: () => ({ isValid: () => false, format: () => "" }),
   async requestUrl(req) {
     global.__requests.push(req);
     const res = global.__handler(req);

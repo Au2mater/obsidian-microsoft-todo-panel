@@ -15,6 +15,7 @@ const {
   Plugin,
   PluginSettingTab,
   Setting,
+  moment,
   requestUrl,
   setIcon,
 } = require("obsidian");
@@ -37,6 +38,8 @@ const DEFAULT_SETTINGS = {
   dueFormat: "📅 {{date}}",
   linkFormat: "https://to-do.office.com/tasks/id/{{id}}/details",
   hideEmptyLists: true,
+  // How daily note file names spell their date (Moment.js format).
+  dailyNoteFormat: "YYYY-MM-DD",
   // Panel state, kept between sessions.
   tab: "lists",
   showCompleted: false,
@@ -99,9 +102,10 @@ module.exports = class TodoPanelPlugin extends Plugin {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
+      if (!leaf) return;
       await leaf.setViewState({ type: VIEW_TYPE, active: true });
     }
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   async saveSettings() {
@@ -153,22 +157,14 @@ module.exports = class TodoPanelPlugin extends Plugin {
   }
 
   // The date a daily note stands for, as YYYY-MM-DD, or null for any other
-  // note. Uses the Daily notes core plugin's date format (YYYY-MM-DD unless
-  // set otherwise) on the file name.
+  // note, read from the file name with the "Daily note date format" setting.
   dailyNoteDate(file) {
-    if (!file || !file.basename || !window.moment) return null;
-    let format = "YYYY-MM-DD";
-    try {
-      const daily = this.app.internalPlugins.getPluginById("daily-notes");
-      const configured = daily && daily.instance && daily.instance.options && daily.instance.options.format;
-      if (configured) format = configured;
-    } catch (_) {
-      // Internal API; fall back to the default format.
-    }
+    if (!file || !file.basename) return null;
+    const format = (this.settings.dailyNoteFormat || "").trim() || "YYYY-MM-DD";
     // A format with folders ("YYYY/MM/YYYY-MM-DD") names the path, so match
     // its last part against the file name.
     const nameFormat = format.split("/").pop();
-    const parsed = window.moment(file.basename, nameFormat, true);
+    const parsed = moment(file.basename, nameFormat, true);
     return parsed.isValid() ? parsed.format("YYYY-MM-DD") : null;
   }
 
@@ -651,6 +647,22 @@ class TodoPanelSettingTab extends PluginSettingTab {
         })
       );
     new Setting(containerEl)
+      .setName("Daily note date format")
+      .setDesc(
+        "How your daily notes' file names spell their date, in Moment.js format. " +
+          "With a daily note open, By date groups tasks around that note's date."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("YYYY-MM-DD")
+          .setValue(s.dailyNoteFormat)
+          .onChange(async (value) => {
+            s.dailyNoteFormat = value.trim() || "YYYY-MM-DD";
+            await this.plugin.saveSettings();
+            this.plugin.panels().forEach((view) => view.updateNoteMatches());
+          })
+      );
+    new Setting(containerEl)
       .setName("Hide empty lists")
       .addToggle((toggle) =>
         toggle.setValue(s.hideEmptyLists).onChange(async (value) => {
@@ -1124,14 +1136,15 @@ function localDayFromUtc(value) {
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
-function postForm(url, fields) {
-  return requestUrl({
+async function postForm(url, fields) {
+  const res = await requestUrl({
     url,
     method: "POST",
     contentType: "application/x-www-form-urlencoded",
     body: new URLSearchParams(fields).toString(),
     throw: false,
-  }).then((res) => ({ status: res.status, headers: res.headers, json: safeJson(res) }));
+  });
+  return { status: res.status, headers: res.headers, json: safeJson(res) };
 }
 
 function safeJson(res) {
