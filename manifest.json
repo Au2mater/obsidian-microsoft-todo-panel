@@ -1,9 +1,10 @@
 {
-  "id": "second-brain-todo-panel",
-  "name": "To Do Panel",
+  "id": "microsoft-todo-panel",
+  "name": "Microsoft To Do Panel",
   "version": "0.2.0",
   "minAppVersion": "1.11.4",
-  "description": "Show your Microsoft To Do tasks in a sidebar and drag them into notes. Signs in to Microsoft directly with read-only access.",
-  "author": "second-brain",
+  "description": "Drag your Microsoft To Do tasks into notes from a sidebar, and see which ones a note already holds. Read-only.",
+  "author": "Au2mater",
+  "authorUrl": "https://github.com/Au2mater",
   "isDesktopOnly": true
 }

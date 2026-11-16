@@ -1,4 +1,4 @@
-# To Do Panel for Obsidian
+# Microsoft To Do Panel for Obsidian
 
 A sidebar in Obsidian that lists your Microsoft To Do tasks. Drag a task into
 a note to insert it as a Markdown task line, or click it to insert it at the
@@ -36,7 +36,7 @@ takes about five minutes and keeps your tasks between you and Microsoft.
 
 1. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com)
    (or the Azure portal) and go to **App registrations → New registration**.
-2. Name it, for example "Obsidian To Do Panel".
+2. Name it, for example "Obsidian Microsoft To Do Panel".
 3. Under **Supported account types**, pick one:
    - **Accounts in this organizational directory only** for a work or school
      account. You will then use your tenant ID in the plugin.
@@ -53,7 +53,7 @@ takes about five minutes and keeps your tasks between you and Microsoft.
 
 ### 2. Connect the plugin
 
-1. Open the panel and select **Sign in**, or open **Settings → To Do Panel**.
+1. Open the panel and select **Sign in**, or open **Settings → Microsoft To Do Panel**.
 2. Paste the client ID into **Client ID**.
 3. Set **Tenant**:
    - your directory (tenant) ID for an app limited to your organisation;
@@ -62,8 +62,7 @@ takes about five minutes and keeps your tasks between you and Microsoft.
 4. Select **Sign in**. A dialog shows a short code. Open the Microsoft page,
    enter the code and sign in. The dialog closes by itself and the panel fills.
 
-Open the panel from the ribbon icon or with the command **To Do Panel: Open
-panel**.
+Open the panel from the ribbon icon or with the command **Microsoft To Do Panel: Open panel**.
 
 ### Where the sign-in is kept
 
@@ -90,8 +89,8 @@ plugin cannot sign in there.
 ## Install
 
 Plain JavaScript, no build step. Copy `manifest.json`, `main.js` and
-`styles.css` into `<vault>/<config folder>/plugins/second-brain-todo-panel/`,
-then enable **To Do Panel** under **Settings → Community plugins**. The config
+`styles.css` into `<vault>/<config folder>/plugins/microsoft-todo-panel/`,
+then enable **Microsoft To Do Panel** under **Settings → Community plugins**. The config
 folder is `.obsidian` unless the vault overrides it.
 
 ```bash

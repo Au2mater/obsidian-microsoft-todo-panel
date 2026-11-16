@@ -1,4 +1,4 @@
-// To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
+// Microsoft To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
 // to Microsoft itself (OAuth device code flow, read-only Tasks permission) and
 // reads tasks from Microsoft Graph. Dragging a task into a note inserts it as
 // a Markdown line; clicking a task inserts it at the cursor of the last
@@ -19,8 +19,8 @@ const {
   setIcon,
 } = require("obsidian");
 
-const VIEW_TYPE = "second-brain-todo-panel";
-const DRAG_TYPE = "application/x-second-brain-todo";
+const VIEW_TYPE = "microsoft-todo-panel";
+const DRAG_TYPE = "application/x-microsoft-todo-task";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // Where the sign-in session lives: Obsidian's secret storage, kept on this
 // device and outside the vault, so it is never synced or committed.
@@ -52,7 +52,7 @@ module.exports = class TodoPanelPlugin extends Plugin {
     for (const key of RETIRED_SETTINGS) delete this.settings[key];
     this.auth = new MicrosoftAuth(this);
     this.registerView(VIEW_TYPE, (leaf) => new TodoPanelView(leaf, this));
-    this.addRibbonIcon("list-checks", "Open To Do panel", () => this.openPanel());
+    this.addRibbonIcon("list-checks", "Open Microsoft To Do panel", () => this.openPanel());
     this.addCommand({
       id: "open-panel",
       name: "Open panel",
@@ -221,7 +221,7 @@ class TodoPanelView extends ItemView {
   }
 
   getDisplayText() {
-    return "To Do";
+    return "Microsoft To Do";
   }
 
   getIcon() {

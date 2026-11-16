@@ -3,7 +3,7 @@
 class Plugin {
   constructor() {
     const store = {};
-    this.manifest = { id: "second-brain-todo-panel" };
+    this.manifest = { id: "microsoft-todo-panel" };
     this.app = {
       secretStorage: {
         setSecret(id, value) {

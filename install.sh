@@ -3,7 +3,7 @@
 set -euo pipefail
 config_dir="${1:?usage: ./install.sh <vault config folder, e.g. vault/.obsidian>}"
 [ -d "$config_dir" ] || { echo "No such folder: $config_dir" >&2; exit 1; }
-target="$config_dir/plugins/second-brain-todo-panel"
+target="$config_dir/plugins/microsoft-todo-panel"
 mkdir -p "$target"
 here="$(cd "$(dirname "$0")" && pwd)"
 cp "$here/manifest.json" "$here/main.js" "$here/styles.css" "$target/"
