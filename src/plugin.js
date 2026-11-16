@@ -1377,7 +1377,9 @@ function localDayFromUtc(value) {
 // After a drop, the editor selects the text it inserted. If that text landed
 // inside a line with other text, take it out again and put it on a new line
 // below that line, or above it when dropped at the line's start, so no line
-// is split. Does nothing when the selection is not the dropped text.
+// is split. The new line gets the same indentation as the line dropped on,
+// so a task dropped on a nested list item lands beside it. Does nothing when
+// the selection is not the dropped text.
 function placeOnOwnLine(editor, text) {
   if (!text || text.includes("\n")) return;
   const selection = editor.listSelections()[0];
@@ -1389,6 +1391,7 @@ function placeOnOwnLine(editor, text) {
   const after = line.slice(to.ch);
   if (!before.trim() && !after.trim()) return;
   const remaining = before + after;
+  const indent = remaining.match(/^[ \t]*/)[0];
   const atStart = !before.trim();
   const target = atStart ? from.line : from.line + 1;
   // One transaction, so a single undo reverts the move.
@@ -1397,11 +1400,11 @@ function placeOnOwnLine(editor, text) {
       {
         from: { line: from.line, ch: 0 },
         to: { line: from.line, ch: line.length },
-        text: atStart ? `${text}\n${remaining}` : `${remaining}\n${text}`,
+        text: atStart ? `${indent}${text}\n${remaining}` : `${remaining}\n${indent}${text}`,
       },
     ],
   });
-  editor.setSelection({ line: target, ch: 0 }, { line: target, ch: text.length });
+  editor.setSelection({ line: target, ch: indent.length }, { line: target, ch: indent.length + text.length });
 }
 
 // Plain text from a task's HTML notes, for display as text only (never as

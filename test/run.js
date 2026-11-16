@@ -407,6 +407,15 @@ test("a task dropped inside a line moves to a line of its own", () => {
   ed = fakeEditor([`Notes:${task}`], { line: 0, ch: 6 }, { line: 0, ch: 6 + task.length });
   placeOnOwnLine(ed, task);
   assert.deepStrictEqual(ed.lines, ["Notes:", task]);
+  // Dropped on an indented list item: the task gets the same indentation.
+  ed = fakeEditor(["- Project", `    - Call Ann${task}`], { line: 1, ch: 14 }, { line: 1, ch: 14 + task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, ["- Project", "    - Call Ann", `    ${task}`]);
+  assert.deepStrictEqual(ed.selection, { anchor: { line: 2, ch: 4 }, head: { line: 2, ch: 4 + task.length } });
+  // Dropped inside the indentation of a line: above it, same indentation.
+  ed = fakeEditor([`\t${task}\t- Item`], { line: 0, ch: 1 }, { line: 0, ch: 1 + task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, [`\t\t${task}`, "\t\t- Item"], "the line was indented by two tabs before the drop");
   // Dropped on an empty line: left alone.
   ed = fakeEditor(["a", task, "b"], { line: 1, ch: 0 }, { line: 1, ch: task.length });
   placeOnOwnLine(ed, task);
