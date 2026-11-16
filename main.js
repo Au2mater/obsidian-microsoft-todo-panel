@@ -49,6 +49,23 @@ module.exports = class TodoPanelPlugin extends Plugin {
       callback: () => this.panels().forEach((view) => view.refresh()),
     });
     this.addSettingTab(new TodoPanelSettingTab(this.app, this));
+
+    // Keep the "in note" markers in step with the note being worked on.
+    const noteChanged = () => this.panels().forEach((view) => view.updateNoteMatches());
+    this.registerEvent(this.app.workspace.on("active-leaf-change", noteChanged));
+    this.registerEvent(this.app.workspace.on("file-open", noteChanged));
+    let pending = null;
+    this.registerEvent(
+      this.app.workspace.on("editor-change", () => {
+        window.clearTimeout(pending);
+        pending = window.setTimeout(noteChanged, 300);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file === this.app.workspace.getActiveFile()) noteChanged();
+      })
+    );
   }
 
   onunload() {
@@ -118,6 +135,16 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return fill(s.template, values)
       .replace(/[ \t]{2,}/g, " ")
       .replace(/[ \t]+$/gm, "");
+  }
+
+  // The note the user is working in: the active Markdown editor, which stays
+  // set while focus is in the sidebar. Resolves to { file, text } or null.
+  async activeNote() {
+    const active = this.app.workspace.activeEditor;
+    if (active && active.editor) return { file: active.file, text: active.editor.getValue() };
+    const file = this.app.workspace.getActiveFile();
+    if (file && file.extension === "md") return { file, text: await this.app.vault.cachedRead(file) };
+    return null;
   }
 
   // Click-to-insert: put the task on its own line at the cursor of the note
@@ -328,6 +355,7 @@ class TodoPanelView extends ItemView {
       }
     }
     this.updateToggleAll();
+    this.updateNoteMatches();
   }
 
   updateToggleAll() {
@@ -356,10 +384,12 @@ class TodoPanelView extends ItemView {
     }
     if (showList) meta.push(["sb-todo-list-name", list.name]);
     if (task.notes) meta.push(["sb-todo-has-notes", "Notes"]);
-    if (meta.length) {
-      const metaEl = body.createDiv({ cls: "sb-todo-meta" });
-      for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
-    }
+    const metaEl = body.createDiv({ cls: "sb-todo-meta" });
+    // Shown by CSS only while the active note already has this task.
+    metaEl.createSpan({ cls: "sb-todo-in-note", text: "In note" });
+    for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
+    row.sbEntry = { task, list };
+    if (this.noteLines && this.inNote(task, list)) row.addClass("is-in-note");
     if (task.notes) row.setAttr("title", task.notes);
 
     row.addEventListener("dragstart", (evt) => {
@@ -373,6 +403,34 @@ class TodoPanelView extends ItemView {
     row.addEventListener("click", () => {
       this.plugin.insertIntoActiveNote(this.plugin.renderTask(task, list));
     });
+  }
+
+  // Re-reads the active note and marks the tasks it already contains,
+  // without rebuilding the panel, so scrolling and open groups stay put.
+  async updateNoteMatches() {
+    const note = await this.plugin.activeNote();
+    this.noteLines = note ? noteTaskLines(note.text) : null;
+    this.noteName = note && note.file ? note.file.basename : "";
+    if (!this.listsEl) return;
+    for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) {
+      if (!row.sbEntry) continue;
+      const found = Boolean(this.noteLines) && this.inNote(row.sbEntry.task, row.sbEntry.list);
+      row.toggleClass("is-in-note", found);
+      const badge = row.querySelector(".sb-todo-in-note");
+      if (badge) badge.setAttr("title", found ? `Already in ${this.noteName}` : "");
+    }
+  }
+
+  // A note line holds this task when, list marker and checkbox aside, it is
+  // the task's title (a due date or link after it allowed), or exactly what
+  // dropping the task would insert.
+  inNote(task, list) {
+    const lines = this.noteLines;
+    if (!lines) return false;
+    const title = normalizeText(task.title);
+    if (title && lines.titles.has(title)) return true;
+    const rendered = this.plugin.renderTask(task, list).trim();
+    return lines.raw.has(rendered);
   }
 
   matches(task, list) {
@@ -454,6 +512,38 @@ function splitCommand(command) {
     parts.push(match[1] ?? match[2] ?? match[3]);
   }
   return parts;
+}
+
+// The task-like lines of a note: each raw trimmed line, and each list item's
+// text reduced by normalizeText.
+function noteTaskLines(text) {
+  const raw = new Set();
+  const titles = new Set();
+  for (const line of (text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    raw.add(trimmed);
+    const item = trimmed.match(/^(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?(.*)$/);
+    if (item) titles.add(normalizeText(item[1]));
+  }
+  return { raw, titles };
+}
+
+// What makes two task texts "the same": case, indentation and runs of
+// whitespace do not count, and neither does a tail of emojis, dates and links,
+// such as "📅 2026-11-20", "✅ 16/11/2026" or "[To Do](https://…)".
+const TRAILING_NOISE = new RegExp(
+  "(?:\\s*(?:" +
+    "\\[[^\\]]*\\]\\([^)]*\\)" + // Markdown link
+    "|\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{1,2}:\\d{2})?" + // 2026-11-20, optional time
+    "|\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}" + // 20/11/2026, 20.11.26
+    "|[\\p{Extended_Pictographic}\\u2190-\\u21FF\\u2B00-\\u2BFF\\uFE0F\\u200D]+" + // emojis and arrows
+    "))+\\s*$",
+  "u"
+);
+
+function normalizeText(text) {
+  return (text || "").replace(TRAILING_NOISE, "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function fill(template, values) {
