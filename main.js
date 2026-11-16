@@ -118,19 +118,15 @@ module.exports = class TodoPanelPlugin extends Plugin {
   }
 
   // Click-to-insert: put the task on its own line at the cursor of the note
-  // that was active last.
+  // that was active last. activeEditor survives focus moving to the sidebar.
   insertIntoActiveNote(text) {
-    const view =
-      this.app.workspace.getActiveViewOfType(MarkdownView) ||
-      this.app.workspace
-        .getLeavesOfType("markdown")
-        .map((leaf) => leaf.view)
-        .find((v) => v instanceof MarkdownView);
-    if (!view) {
-      new Notice("Open a note first.");
+    const editor =
+      this.app.workspace.activeEditor?.editor ||
+      this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    if (!editor) {
+      new Notice("Click into a note first, then click the task.");
       return;
     }
-    const editor = view.editor;
     const cursor = editor.getCursor();
     const line = editor.getLine(cursor.line);
     if (line.trim() === "") {
@@ -263,7 +259,6 @@ class TodoPanelView extends ItemView {
       // The editor inserts text/plain at the drop point on its own.
       evt.dataTransfer.setData("text/plain", markdown);
       evt.dataTransfer.setData(DRAG_TYPE, JSON.stringify({ id: task.id, list_id: list.id }));
-      evt.dataTransfer.effectAllowed = "copy";
       row.addClass("is-dragging");
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
