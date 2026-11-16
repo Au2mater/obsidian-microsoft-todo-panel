@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-todo-panel",
+  "name": "obsidian-microsoft-todo-panel",
   "private": true,
   "scripts": {
     "test": "node test/run.js"
