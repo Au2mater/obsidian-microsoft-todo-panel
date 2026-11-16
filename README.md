@@ -136,7 +136,7 @@ collapse.
 
 ## Development
 
-Plain JavaScript with no dependencies. The source is `src/main.js`;
+Plain JavaScript with no dependencies. The source is `src/plugin.js`;
 `npm run build` checks it and writes `main.js`, the file Obsidian loads. To
 try a change, build it into a vault:
 

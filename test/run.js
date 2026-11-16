@@ -13,7 +13,7 @@ const realResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
   return request === "obsidian" ? stubPath : realResolve.call(this, request, ...rest);
 };
-const mainPath = path.join(__dirname, "..", "src", "main.js");
+const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
   "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError };\n";
