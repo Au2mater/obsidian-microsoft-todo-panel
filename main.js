@@ -20,9 +20,11 @@ const { execFile } = require("child_process");
 const VIEW_TYPE = "second-brain-todo-panel";
 const DRAG_TYPE = "application/x-second-brain-todo";
 
+const OLD_DEFAULT_COMMAND = 'wsl.exe -e bash -lc "second-brain todo-lists --json"';
+
 const DEFAULT_SETTINGS = {
   // Run inside WSL through a login shell, so ~/.local/bin is on PATH.
-  command: 'wsl.exe -e bash -lc "second-brain todo-lists --json"',
+  command: 'wsl.exe -e bash -lc "second-brain todo-lists --json --completed-days 7"',
   template: "- [ ] {{title}} {{due}}",
   dueFormat: "📅 {{date}}",
   linkFormat: "https://to-do.office.com/tasks/id/{{id}}/details",
@@ -30,12 +32,16 @@ const DEFAULT_SETTINGS = {
   timeoutSeconds: 60,
   // Panel state, kept between sessions.
   tab: "lists",
+  showCompleted: false,
   collapsed: { lists: [], dates: ["date:none"] },
 };
 
 module.exports = class TodoPanelPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // Saved settings from 0.1 carry the old default command, which left out
+    // completed tasks; move them onto the new default.
+    if (this.settings.command === OLD_DEFAULT_COMMAND) this.settings.command = DEFAULT_SETTINGS.command;
     this.registerView(VIEW_TYPE, (leaf) => new TodoPanelView(leaf, this));
     this.addRibbonIcon("list-checks", "Open To Do panel", () => this.openPanel());
     this.addCommand({
@@ -132,7 +138,9 @@ module.exports = class TodoPanelPlugin extends Plugin {
       due: task.due_date ? fill(s.dueFormat, { date: task.due_date }) : "",
       link: fill(s.linkFormat, { id: encodeURIComponent(task.id), list: encodeURIComponent(list.id) }),
     };
-    return fill(s.template, values)
+    let line = fill(s.template, values);
+    if (task.completed) line = line.replace("[ ]", "[x]");
+    return line
       .replace(/[ \t]{2,}/g, " ")
       .replace(/[ \t]+$/gm, "");
   }
@@ -208,6 +216,12 @@ class TodoPanelView extends ItemView {
       // state, so clearing it brings the groups back as they were.
       this.filter = search.value.trim().toLowerCase();
       this.filterCollapsed = new Set();
+      this.renderLists();
+    });
+    this.completedEl = toolbar.createEl("button", { cls: "sb-todo-toggle" });
+    this.completedEl.addEventListener("click", () => {
+      this.plugin.settings.showCompleted = !this.plugin.settings.showCompleted;
+      this.plugin.saveSettings();
       this.renderLists();
     });
     this.toggleAllEl = toolbar.createEl("button");
@@ -296,12 +310,20 @@ class TodoPanelView extends ItemView {
 
   // The groups the current tab shows, each with its matching tasks in order.
   groups() {
+    const showCompleted = this.plugin.settings.showCompleted;
+    // Open tasks first in every group; completed ones, when shown, follow.
+    const openFirst = (items) => [
+      ...items.filter((e) => !e.task.completed),
+      ...items.filter((e) => e.task.completed),
+    ];
     const entries = (list) =>
-      list.tasks.filter((task) => this.matches(task, list)).map((task) => ({ task, list }));
+      list.tasks
+        .filter((task) => (showCompleted || !task.completed) && this.matches(task, list))
+        .map((task) => ({ task, list }));
 
     if (this.tab === "lists") {
       return this.lists
-        .map((list) => ({ key: list.id, name: list.name, items: entries(list) }))
+        .map((list) => ({ key: list.id, name: list.name, items: openFirst(entries(list)) }))
         .filter((g) => g.items.length > 0 || (!this.filter && !this.plugin.settings.hideEmptyLists));
     }
 
@@ -310,7 +332,7 @@ class TodoPanelView extends ItemView {
     const byTitle = (a, b) => a.task.title.localeCompare(b.task.title);
     const byDue = (a, b) => a.task.due_date.localeCompare(b.task.due_date) || byTitle(a, b);
     const important = (a, b) => (b.task.importance === "high") - (a.task.importance === "high");
-    return [
+    const groups = [
       {
         key: "date:today",
         name: "Today",
@@ -319,13 +341,22 @@ class TodoPanelView extends ItemView {
       { key: "date:later", name: "Later", items: all.filter((e) => e.task.due_date > today).sort(byDue) },
       { key: "date:earlier", name: "Earlier", items: all.filter((e) => e.task.due_date && e.task.due_date < today).sort(byDue) },
       { key: "date:none", name: "No date", items: all.filter((e) => !e.task.due_date).sort(byTitle) },
-    ].filter((g) => g.items.length > 0 || (!this.filter && g.key !== "date:none"));
+    ];
+    for (const g of groups) g.items = openFirst(g.items);
+    return groups.filter((g) => g.items.length > 0 || (!this.filter && g.key !== "date:none"));
   }
 
   renderLists() {
     this.renderStatus();
     if (!this.listsEl) return;
     this.listsEl.empty();
+    if (this.completedEl) {
+      const on = this.plugin.settings.showCompleted;
+      this.completedEl.toggleClass("is-active", on);
+      this.completedEl.setAttr("aria-label", on ? "Hide completed tasks" : "Show completed tasks (last 7 days)");
+      this.completedEl.setAttr("aria-pressed", String(on));
+      setIcon(this.completedEl, "circle-check");
+    }
     for (const [key, el] of Object.entries(this.tabEls || {})) {
       el.toggleClass("is-active", key === this.tab);
       el.setAttr("aria-selected", String(key === this.tab));
@@ -346,7 +377,9 @@ class TodoPanelView extends ItemView {
         this.updateToggleAll();
       });
       const summary = details.createEl("summary", { text: group.name });
-      summary.createSpan({ cls: "sb-todo-count", text: String(group.items.length) });
+      const done = group.items.filter((e) => e.task.completed).length;
+      summary.createSpan({ cls: "sb-todo-count", text: String(group.items.length - done) });
+      if (done) summary.createSpan({ cls: "sb-todo-done-count", text: `+${done} done` });
       if (group.items.length === 0) {
         details.createDiv({ cls: "sb-todo-empty", text: "Nothing here" });
       }
@@ -372,13 +405,17 @@ class TodoPanelView extends ItemView {
     // continuation line never looks like the start of the next task.
     const marker = row.createSpan({ cls: "sb-todo-marker", attr: { "aria-hidden": "true" } });
     if (task.importance === "high") marker.addClass("is-important");
+    if (task.completed) row.addClass("is-completed");
 
     const body = row.createDiv({ cls: "sb-todo-body" });
     body.createDiv({ cls: "sb-todo-title", text: task.title });
 
     const meta = [];
-    if (task.importance === "high") meta.push(["sb-todo-flag", "Important"]);
-    if (task.due_date) {
+    if (task.completed) meta.push(["sb-todo-done", task.completed_date ? `Done ${shortDate(task.completed_date)}` : "Done"]);
+    else if (task.importance === "high") meta.push(["sb-todo-flag", "Important"]);
+    if (task.due_date && task.completed) {
+      meta.push(["sb-todo-due", `Due ${shortDate(task.due_date)}`]);
+    } else if (task.due_date) {
       const state = task.due_date < today ? " is-overdue" : task.due_date === today ? " is-today" : "";
       meta.push([`sb-todo-due${state}`, shortDate(task.due_date)]);
     }

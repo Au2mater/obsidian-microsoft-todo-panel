@@ -7,6 +7,15 @@ cursor.
 Microsoft To Do itself does not allow dragging tasks into other apps, so the
 drag starts in this panel instead.
 
+- **Lists** and **By date** tabs: To Do's own lists, or Today, Later (earliest
+  first), Earlier (earliest first) and No date.
+- One button expands or collapses every group.
+- A task the active note already contains is marked **In note**. Matching
+  ignores case, indentation, whitespace, the checkbox, and trailing emojis,
+  dates and links.
+- A compact toggle shows the tasks completed in the last 7 days, struck
+  through, after the open tasks of each group. Dropping one inserts `- [x]`.
+
 ## How it works
 
 The plugin holds no sign-in of its own. It runs `second-brain todo-lists --json`,
@@ -18,7 +27,7 @@ to sign in again, then refresh the panel.
 By default the command runs inside WSL:
 
 ```text
-wsl.exe -e bash -lc "second-brain todo-lists --json"
+wsl.exe -e bash -lc "second-brain todo-lists --json --completed-days 7"
 ```
 
 Change it under **Settings → To Do Panel → Command** if the CLI is installed
@@ -35,7 +44,7 @@ folder is `.obsidian` unless the vault overrides it.
 ./install.sh "/path/to/vault/.obsidian"
 ```
 
-It needs a second-brain CLI new enough to have the `todo-lists` command.
+It needs second-brain 0.20 or newer (`todo-lists --completed-days`).
 
 ## Settings
 

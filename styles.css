@@ -180,3 +180,34 @@
   border-color: var(--color-green);
   background: color-mix(in srgb, var(--color-green) 25%, transparent);
 }
+
+/* Compact on/off toggle for completed tasks. */
+.sb-todo-toggle.is-active {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.sb-todo-done-count {
+  color: var(--text-faint);
+  font-weight: normal;
+  font-size: var(--font-ui-smaller);
+  margin-left: var(--size-4-2);
+}
+
+.sb-todo-task.is-completed .sb-todo-title {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.sb-todo-task.is-completed .sb-todo-marker {
+  border-color: var(--text-faint);
+  background: var(--text-faint);
+}
+
+.sb-todo-task.is-completed .sb-todo-due {
+  color: var(--text-faint);
+}
+
+.sb-todo-done {
+  color: var(--text-faint);
+}
