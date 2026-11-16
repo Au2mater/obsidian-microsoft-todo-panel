@@ -1,47 +1,56 @@
-// To Do Panel: a sidebar listing Microsoft To Do tasks, read through the
-// second-brain CLI so the plugin reuses its sign-in and never holds a token.
-// Dragging a task into a note inserts it as a Markdown line; clicking a task
-// inserts it at the cursor of the last active note.
+// To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
+// to Microsoft itself (OAuth device code flow, read-only Tasks permission) and
+// reads tasks from Microsoft Graph. Dragging a task into a note inserts it as
+// a Markdown line; clicking a task inserts it at the cursor of the last
+// active note.
 //
-// Plain JavaScript with no build step: copy this folder into the vault's
-// plugins folder (see README.md).
+// Plain JavaScript with no build step: copy manifest.json, main.js and
+// styles.css into the vault's plugins folder (see README.md).
 
 const {
   ItemView,
   MarkdownView,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
+  requestUrl,
   setIcon,
 } = require("obsidian");
-const { execFile } = require("child_process");
 
 const VIEW_TYPE = "second-brain-todo-panel";
 const DRAG_TYPE = "application/x-second-brain-todo";
-
-const OLD_DEFAULT_COMMAND = 'wsl.exe -e bash -lc "second-brain todo-lists --json"';
+const GRAPH = "https://graph.microsoft.com/v1.0";
+// Where the sign-in session lives: Obsidian's secret storage, kept on this
+// device and outside the vault, so it is never synced or committed.
+const SESSION_SECRET_ID = "todo-panel-microsoft-session";
 
 const DEFAULT_SETTINGS = {
-  // Run inside WSL through a login shell, so ~/.local/bin is on PATH.
-  command: 'wsl.exe -e bash -lc "second-brain todo-lists --json --completed-days 7"',
+  // Microsoft sign-in. There is no shared app registration: each user
+  // registers their own (see README.md) and pastes its IDs here.
+  clientId: "",
+  tenant: "common",
+  scopes: "Tasks.Read",
+  completedDays: 7,
   template: "- [ ] {{title}} {{due}}",
   dueFormat: "📅 {{date}}",
   linkFormat: "https://to-do.office.com/tasks/id/{{id}}/details",
   hideEmptyLists: true,
-  timeoutSeconds: 60,
   // Panel state, kept between sessions.
   tab: "lists",
   showCompleted: false,
   collapsed: { lists: [], dates: ["date:none"] },
 };
 
+// Settings from the versions that read tasks through an external command.
+const RETIRED_SETTINGS = ["command", "timeoutSeconds"];
+
 module.exports = class TodoPanelPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    // Saved settings from 0.1 carry the old default command, which left out
-    // completed tasks; move them onto the new default.
-    if (this.settings.command === OLD_DEFAULT_COMMAND) this.settings.command = DEFAULT_SETTINGS.command;
+    for (const key of RETIRED_SETTINGS) delete this.settings[key];
+    this.auth = new MicrosoftAuth(this);
     this.registerView(VIEW_TYPE, (leaf) => new TodoPanelView(leaf, this));
     this.addRibbonIcon("list-checks", "Open To Do panel", () => this.openPanel());
     this.addCommand({
@@ -75,7 +84,8 @@ module.exports = class TodoPanelPlugin extends Plugin {
   }
 
   onunload() {
-    // Obsidian detaches the views itself; nothing else is held open.
+    // Stops a sign-in that is still waiting for the user.
+    if (this.signInModal) this.signInModal.close();
   }
 
   panels() {
@@ -98,33 +108,34 @@ module.exports = class TodoPanelPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  // Runs the configured command and resolves to the parsed JSON envelope.
+  // Reads every To Do list with its open tasks (and recently completed ones)
+  // from Microsoft Graph.
   fetchLists() {
-    const [file, ...args] = splitCommand(this.settings.command);
-    if (!file) return Promise.reject(new Error("No command configured."));
-    return new Promise((resolve, reject) => {
-      execFile(
-        file,
-        args,
-        {
-          timeout: Math.max(5, Number(this.settings.timeoutSeconds) || 60) * 1000,
-          windowsHide: true,
-          maxBuffer: 32 * 1024 * 1024,
-        },
-        (error, stdout, stderr) => {
-          let payload = null;
-          try {
-            payload = JSON.parse(stdout);
-          } catch (_) {
-            // Fall through: report the process error or its stderr.
-          }
-          if (payload && payload.error) return reject(new Error(payload.error));
-          if (payload && Array.isArray(payload.data)) return resolve(payload);
-          const detail = lastLines(stderr) || (error && error.message) || "No output.";
-          reject(new Error(`Could not read tasks.\n${detail}`));
-        }
-      );
-    });
+    return fetchTodoLists(this.auth, Math.max(0, Number(this.settings.completedDays) || 0));
+  }
+
+  // Opens the sign-in dialog, or says what is missing first.
+  signIn() {
+    if (!this.settings.clientId.trim()) {
+      new Notice("Add your app's client ID under Settings → To Do Panel first.");
+      return;
+    }
+    if (this.signInModal) return;
+    this.signInModal = new SignInModal(this.app, this);
+    this.signInModal.open();
+  }
+
+  signOut() {
+    this.auth.signOut();
+    this.panels().forEach((view) => view.clear());
+    new Notice("Signed out of Microsoft.");
+  }
+
+  // Called by the sign-in dialog once Microsoft has issued tokens.
+  signedIn() {
+    const who = this.auth.account ? ` as ${this.auth.account}` : "";
+    new Notice(`Signed in to Microsoft${who}.`);
+    this.panels().forEach((view) => view.refresh());
   }
 
   // The Markdown a task becomes when dropped or inserted.
@@ -266,6 +277,10 @@ class TodoPanelView extends ItemView {
 
   async refresh() {
     if (this.loading) return;
+    if (!this.plugin.auth.signedIn) {
+      this.clear();
+      return;
+    }
     this.loading = true;
     this.error = null;
     this.renderStatus();
@@ -275,16 +290,37 @@ class TodoPanelView extends ItemView {
       this.fetchedAt = new Date();
     } catch (e) {
       this.error = e.message;
+      if (!this.plugin.auth.signedIn) this.lists = [];
     } finally {
       this.loading = false;
       this.renderLists();
     }
   }
 
+  // Back to the signed-out state: no tasks, and a way to sign in.
+  clear() {
+    this.lists = [];
+    this.fetchedAt = null;
+    this.error = null;
+    this.renderLists();
+  }
+
   renderStatus() {
     if (!this.statusEl) return;
     this.statusEl.empty();
-    if (this.loading) {
+    if (!this.plugin.auth.signedIn && !this.loading) {
+      const box = this.statusEl.createDiv({ cls: "sb-todo-signin" });
+      if (this.error) box.createDiv({ cls: "sb-todo-error", text: this.error });
+      if (!this.plugin.settings.clientId.trim()) {
+        box.createDiv({
+          text: "To show your tasks, register an app with Microsoft and add its client ID under Settings → To Do Panel. The README explains how.",
+        });
+      } else {
+        box.createDiv({ text: "Sign in to Microsoft to show your To Do tasks." });
+        const button = box.createEl("button", { cls: "mod-cta", text: "Sign in" });
+        button.addEventListener("click", () => this.plugin.signIn());
+      }
+    } else if (this.loading) {
       this.statusEl.setText("Loading tasks…");
     } else if (this.error) {
       this.statusEl.createDiv({ cls: "sb-todo-error", text: this.error });
@@ -521,22 +557,85 @@ class TodoPanelSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     const s = this.plugin.settings;
+    const auth = this.plugin.auth;
     containerEl.empty();
 
-    this.text(
-      "Command",
-      "Runs the second-brain CLI and must print `todo-lists --json` output. " +
-        "The default runs it inside WSL.",
-      "command"
-    );
-    this.text(
-      "Task template",
-      "What a dropped task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
-      "template"
-    );
-    this.text("Due format", "What {{due}} becomes when the task has a due date. {{date}} is YYYY-MM-DD.", "dueFormat");
-    this.text("Link format", "What {{link}} becomes. Placeholders: {{id}}, {{list}}.", "linkFormat");
+    new Setting(containerEl).setName("Microsoft account").setHeading();
+    const account = new Setting(containerEl);
+    if (auth.signedIn) {
+      account
+        .setName(auth.account ? `Signed in as ${auth.account}` : "Signed in")
+        .setDesc("The sign-in is kept in Obsidian's secret storage on this device, never in the vault.")
+        .addButton((button) =>
+          button.setButtonText("Sign out").onClick(() => {
+            this.plugin.signOut();
+            this.display();
+          })
+        );
+    } else {
+      account
+        .setName("Not signed in")
+        .setDesc("Add your app's client ID below, then sign in with a code in your browser.")
+        .addButton((button) =>
+          button
+            .setButtonText("Sign in")
+            .setCta()
+            .onClick(() => this.plugin.signIn())
+        );
+    }
 
+    // Changing which app or directory to sign in with ends the current
+    // sign-in, which belongs to the old one.
+    const authSetting = (name, desc, key, placeholder) =>
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addText((text) =>
+          text
+            .setPlaceholder(placeholder)
+            .setValue(s[key])
+            .onChange(async (value) => {
+              s[key] = value.trim();
+              await this.plugin.saveSettings();
+              if (auth.signedIn && !auth.matchesSettings()) {
+                this.plugin.signOut();
+                this.display();
+              }
+            })
+        );
+    authSetting(
+      "Client ID",
+      "The Application (client) ID of the app you registered in Microsoft Entra. See the README.",
+      "clientId",
+      "00000000-0000-0000-0000-000000000000"
+    );
+    authSetting(
+      "Tenant",
+      "Your directory (tenant) ID if the app accepts only accounts in your organisation. " +
+        "Otherwise common, organizations or consumers, matching the app's supported account types.",
+      "tenant",
+      "common"
+    );
+    authSetting(
+      "Permissions",
+      "Microsoft Graph permissions to ask for. Tasks.Read is enough; the plugin never changes tasks.",
+      "scopes",
+      "Tasks.Read"
+    );
+
+    new Setting(containerEl).setName("Tasks").setHeading();
+    new Setting(containerEl)
+      .setName("Completed tasks to load (days)")
+      .setDesc("How far back the show-completed toggle reaches. 0 loads no completed tasks.")
+      .addText((text) =>
+        text.setValue(String(s.completedDays)).onChange(async (value) => {
+          const days = parseInt(value, 10);
+          if (Number.isFinite(days) && days >= 0) {
+            s.completedDays = days;
+            await this.plugin.saveSettings();
+          }
+        })
+      );
     new Setting(containerEl)
       .setName("Hide empty lists")
       .addToggle((toggle) =>
@@ -547,18 +646,14 @@ class TodoPanelSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
-      .setName("Timeout (seconds)")
-      .setDesc("How long to wait for the command before giving up.")
-      .addText((text) =>
-        text.setValue(String(s.timeoutSeconds)).onChange(async (value) => {
-          const seconds = parseInt(value, 10);
-          if (Number.isFinite(seconds) && seconds > 0) {
-            s.timeoutSeconds = seconds;
-            await this.plugin.saveSettings();
-          }
-        })
-      );
+    new Setting(containerEl).setName("Inserting tasks").setHeading();
+    this.text(
+      "Task template",
+      "What a dropped task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
+      "template"
+    );
+    this.text("Due format", "What {{due}} becomes when the task has a due date. {{date}} is YYYY-MM-DD.", "dueFormat");
+    this.text("Link format", "What {{link}} becomes. Placeholders: {{id}}, {{list}}.", "linkFormat");
   }
 
   text(name, desc, key) {
@@ -572,18 +667,6 @@ class TodoPanelSettingTab extends PluginSettingTab {
         })
       );
   }
-}
-
-// Splits a command line into program and arguments, honouring double and
-// single quotes, so arguments go to execFile without a Windows shell.
-function splitCommand(command) {
-  const parts = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match;
-  while ((match = re.exec(command || "")) !== null) {
-    parts.push(match[1] ?? match[2] ?? match[3]);
-  }
-  return parts;
 }
 
 // The task-like lines of a note: each raw trimmed line, and each list item's
@@ -628,10 +711,6 @@ function fill(template, values) {
   );
 }
 
-function lastLines(text, count = 5) {
-  return (text || "").trim().split(/\r?\n/).slice(-count).join("\n");
-}
-
 function localToday() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -653,3 +732,415 @@ function shortDate(isoDate) {
   return date.toLocaleDateString([], sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
 }
 
+// ── Microsoft sign-in ────────────────────────────────────────────────────────
+//
+// OAuth 2.0 device code flow against the Microsoft identity platform, with no
+// library: the user opens a Microsoft page, enters a short code and signs in,
+// while the plugin polls for the tokens. Requests go through Obsidian's
+// requestUrl, which is not subject to browser CORS rules.
+
+class NotSignedInError extends Error {}
+
+class MicrosoftAuth {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.refreshing = null;
+    this.session = this.loadSession();
+    if (this.session && !this.matchesSettings()) this.signOut();
+  }
+
+  get settings() {
+    return this.plugin.settings;
+  }
+
+  get signedIn() {
+    return Boolean(this.session && this.session.refresh_token);
+  }
+
+  get account() {
+    return this.session ? this.session.account || "" : "";
+  }
+
+  // A session belongs to the client ID and tenant it was issued for.
+  matchesSettings() {
+    return (
+      Boolean(this.session) &&
+      this.session.client_id === this.settings.clientId.trim() &&
+      this.session.tenant === this.tenant()
+    );
+  }
+
+  tenant() {
+    return (this.settings.tenant || "").trim() || "common";
+  }
+
+  endpoint(path) {
+    return `https://login.microsoftonline.com/${encodeURIComponent(this.tenant())}/oauth2/v2.0/${path}`;
+  }
+
+  scope() {
+    const asked = (this.settings.scopes || "").split(/[\s,]+/).filter(Boolean);
+    return [...new Set([...asked, "offline_access", "openid", "profile"])].join(" ");
+  }
+
+  // ── session storage ──
+
+  loadSession() {
+    try {
+      const store = this.plugin.app.secretStorage;
+      const raw = store ? store.getSecret(SESSION_SECRET_ID) : this.plugin.app.loadLocalStorage(SESSION_SECRET_ID);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  saveSession(session) {
+    this.session = session;
+    const raw = session ? JSON.stringify(session) : "";
+    const store = this.plugin.app.secretStorage;
+    // Secret storage has no delete; an empty value reads back as signed out.
+    if (store) store.setSecret(SESSION_SECRET_ID, raw);
+    else this.plugin.app.saveLocalStorage(SESSION_SECRET_ID, raw || null);
+  }
+
+  signOut() {
+    this.saveSession(null);
+  }
+
+  // ── device code flow ──
+
+  async startDeviceFlow() {
+    const res = await postForm(this.endpoint("devicecode"), {
+      client_id: this.settings.clientId.trim(),
+      scope: this.scope(),
+    });
+    if (res.status !== 200) throw new Error(describeAuthError(res.json));
+    return res.json;
+  }
+
+  // Polls until the user finishes signing in. `cancel` is an object whose
+  // `cancelled` flag stops the loop, for a closed dialog or an unloaded plugin.
+  async completeDeviceFlow(flow, cancel) {
+    let interval = Math.max(1, Number(flow.interval) || 5);
+    const deadline = Date.now() + (Number(flow.expires_in) || 900) * 1000;
+    while (!cancel.cancelled) {
+      await sleep(interval * 1000);
+      if (cancel.cancelled) break;
+      if (Date.now() > deadline) throw new Error("The sign-in code expired. Start again.");
+      const res = await postForm(this.endpoint("token"), {
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        client_id: this.settings.clientId.trim(),
+        device_code: flow.device_code,
+      });
+      if (res.status === 200) {
+        this.storeTokens(res.json);
+        return;
+      }
+      const error = res.json && res.json.error;
+      if (error === "authorization_pending") continue;
+      if (error === "slow_down") {
+        interval += 5;
+        continue;
+      }
+      if (error === "authorization_declined") throw new Error("Sign-in was declined.");
+      if (error === "expired_token") throw new Error("The sign-in code expired. Start again.");
+      throw new Error(describeAuthError(res.json));
+    }
+    throw new Error("Sign-in cancelled.");
+  }
+
+  storeTokens(tokens) {
+    const previous = this.session || {};
+    const claims = jwtClaims(tokens.id_token);
+    this.saveSession({
+      client_id: this.settings.clientId.trim(),
+      tenant: this.tenant(),
+      access_token: tokens.access_token,
+      // Microsoft rotates refresh tokens; keep the newest one.
+      refresh_token: tokens.refresh_token || previous.refresh_token,
+      expires_at: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+      account: (claims && (claims.preferred_username || claims.email || claims.name)) || previous.account || "",
+    });
+  }
+
+  // ── access tokens ──
+
+  // A valid access token, refreshed when it is about to expire or when
+  // `force` says Graph rejected the current one.
+  async accessToken(force = false) {
+    if (!this.signedIn) throw new NotSignedInError("Not signed in to Microsoft.");
+    const fresh = this.session.access_token && this.session.expires_at - 120000 > Date.now();
+    if (fresh && !force) return this.session.access_token;
+    // Concurrent callers share one refresh, so a rotated refresh token is
+    // never spent twice.
+    if (!this.refreshing) {
+      this.refreshing = this.refresh().finally(() => {
+        this.refreshing = null;
+      });
+    }
+    await this.refreshing;
+    return this.session.access_token;
+  }
+
+  async refresh() {
+    const res = await postForm(this.endpoint("token"), {
+      grant_type: "refresh_token",
+      client_id: this.settings.clientId.trim(),
+      refresh_token: this.session.refresh_token,
+      scope: this.scope(),
+    });
+    if (res.status === 200) {
+      this.storeTokens(res.json);
+      return;
+    }
+    const error = res.json && res.json.error;
+    if (error === "invalid_grant" || error === "interaction_required" || error === "invalid_client") {
+      this.signOut();
+      throw new NotSignedInError(`Your Microsoft sign-in has expired. Sign in again. (${describeAuthError(res.json)})`);
+    }
+    throw new Error(describeAuthError(res.json));
+  }
+}
+
+class SignInModal extends Modal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this.cancel = { cancelled: false };
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    this.setTitle("Sign in to Microsoft");
+    const status = contentEl.createDiv({ cls: "sb-todo-signin-status", text: "Asking Microsoft for a sign-in code…" });
+    let flow;
+    try {
+      flow = await this.plugin.auth.startDeviceFlow();
+    } catch (e) {
+      status.setText(`Could not start sign-in: ${e.message}`);
+      status.addClass("sb-todo-error");
+      return;
+    }
+    if (this.cancel.cancelled) return;
+
+    status.setText("Open the Microsoft sign-in page, enter this code and sign in. This window closes by itself when you are done.");
+    const codeRow = contentEl.createDiv({ cls: "sb-todo-signin-code" });
+    codeRow.createEl("code", { text: flow.user_code });
+    const actions = contentEl.createDiv({ cls: "sb-todo-signin-actions" });
+    const copy = actions.createEl("button", { text: "Copy code" });
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(flow.user_code);
+        copy.setText("Copied");
+      } catch (_) {
+        new Notice("Could not copy; select the code instead.");
+      }
+    });
+    const open = actions.createEl("button", { cls: "mod-cta", text: "Open sign-in page" });
+    open.addEventListener("click", () => window.open(flow.verification_uri, "_blank"));
+    contentEl.createDiv({ cls: "sb-todo-signin-hint", text: flow.verification_uri });
+
+    try {
+      await this.plugin.auth.completeDeviceFlow(flow, this.cancel);
+      if (this.cancel.cancelled) return;
+      this.close();
+      this.plugin.signedIn();
+    } catch (e) {
+      if (this.cancel.cancelled) return;
+      status.setText(e.message);
+      status.addClass("sb-todo-error");
+      codeRow.remove();
+      actions.remove();
+    }
+  }
+
+  onClose() {
+    this.cancel.cancelled = true;
+    this.contentEl.empty();
+    if (this.plugin.signInModal === this) this.plugin.signInModal = null;
+    // The settings tab, if open, shows the new state next time it renders.
+  }
+}
+
+// ── Microsoft Graph ──────────────────────────────────────────────────────────
+
+const GRAPH_MAX_CONCURRENT = 3; // To Do throttles hard beyond a few at a time.
+const GRAPH_MAX_RETRIES = 5;
+
+async function graphGet(auth, url) {
+  let token = await auth.accessToken();
+  let retriedAuth = false;
+  for (let attempt = 0; ; attempt++) {
+    const res = await requestUrl({ url, headers: { Authorization: `Bearer ${token}` }, throw: false });
+    if (res.status === 401 && !retriedAuth) {
+      retriedAuth = true;
+      token = await auth.accessToken(true);
+      continue;
+    }
+    if ([429, 503, 504].includes(res.status) && attempt < GRAPH_MAX_RETRIES) {
+      await sleep(retryDelay(res.headers, attempt) * 1000);
+      continue;
+    }
+    if (res.status >= 400) {
+      const body = safeJson(res);
+      const message = (body && body.error && body.error.message) || `HTTP ${res.status}`;
+      if (res.status === 403) throw new Error(`Microsoft refused access to your tasks: ${message}`);
+      throw new Error(`Microsoft Graph error: ${message}`);
+    }
+    return safeJson(res) || {};
+  }
+}
+
+async function graphGetAll(auth, url) {
+  const items = [];
+  while (url) {
+    const page = await graphGet(auth, url);
+    items.push(...(page.value || []));
+    url = page["@odata.nextLink"];
+  }
+  return items;
+}
+
+// Every To Do list in To Do's order, each with its open tasks first (by due
+// day, undated last, then title) and, when completedDays > 0, the tasks
+// completed today or in the days before.
+async function fetchTodoLists(auth, completedDays) {
+  // One token up front, so parallel requests do not each try to refresh.
+  await auth.accessToken();
+  const lists = await graphGetAll(auth, `${GRAPH}/me/todo/lists`);
+  const filter = taskFilter(completedDays);
+  // To Do's tasks endpoint rejects $select, so whole tasks come back.
+  const query = `$filter=${encodeURIComponent(filter)}&$top=100`;
+  const taskPages = await mapLimit(lists, GRAPH_MAX_CONCURRENT, (list) =>
+    graphGetAll(auth, `${GRAPH}/me/todo/lists/${list.id}/tasks?${query}`)
+  );
+  return lists.map((list, i) => {
+    const tasks = taskPages[i]
+      .filter((task) => completedDays > 0 || task.status !== "completed")
+      .map(taskView);
+    tasks.sort(
+      (a, b) =>
+        a.completed - b.completed ||
+        (a.due_date === null) - (b.due_date === null) ||
+        (a.due_date || "").localeCompare(b.due_date || "") ||
+        a.title.toLowerCase().localeCompare(b.title.toLowerCase())
+    );
+    return { id: list.id, name: list.displayName || "", wellknown_name: list.wellknownListName || null, tasks };
+  });
+}
+
+function taskFilter(completedDays) {
+  if (completedDays <= 0) return "status ne 'completed'";
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  since.setDate(since.getDate() - completedDays);
+  const stamp = since.toISOString().slice(0, 19);
+  return `status ne 'completed' or completedDateTime/dateTime ge '${stamp}'`;
+}
+
+function taskView(task) {
+  const body = task.body || {};
+  return {
+    id: task.id,
+    title: task.title || "",
+    importance: task.importance || null,
+    // To Do sends a due day as local midnight expressed in UTC.
+    due_date: localDayFromUtc(task.dueDateTime),
+    completed: task.status === "completed",
+    // A completion day comes as a bare date at midnight; take it as is.
+    completed_date: task.completedDateTime && task.completedDateTime.dateTime
+      ? task.completedDateTime.dateTime.slice(0, 10)
+      : null,
+    notes: body.contentType === "text" ? (body.content || "").trim() : "",
+    categories: task.categories || [],
+  };
+}
+
+function localDayFromUtc(value) {
+  if (!value || !value.dateTime) return null;
+  const raw = value.dateTime.replace(/\.\d+$/, "");
+  const zone = (value.timeZone || "UTC").toUpperCase();
+  const parsed = new Date(zone === "UTC" ? `${raw}Z` : raw);
+  if (Number.isNaN(parsed.getTime())) return value.dateTime.slice(0, 10);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
+}
+
+// ── small helpers ────────────────────────────────────────────────────────────
+
+function postForm(url, fields) {
+  return requestUrl({
+    url,
+    method: "POST",
+    contentType: "application/x-www-form-urlencoded",
+    body: new URLSearchParams(fields).toString(),
+    throw: false,
+  }).then((res) => ({ status: res.status, headers: res.headers, json: safeJson(res) }));
+}
+
+function safeJson(res) {
+  try {
+    return res.json;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Microsoft's message, trimmed, with a hint for the setup mistakes that
+// produce the least obvious errors.
+const AUTH_HINTS = {
+  AADSTS50059: "Set Tenant to your directory (tenant) ID: this app accepts only accounts in its own organisation.",
+  AADSTS700016: "Check the client ID and the tenant: Microsoft cannot find that app there.",
+  AADSTS7000218: "In the app registration, turn on Authentication → Allow public client flows.",
+  AADSTS65001: "The permission has not been granted yet. An administrator may need to approve the app.",
+  AADSTS90002: "Check the tenant setting: Microsoft does not know that directory.",
+};
+
+function describeAuthError(body) {
+  if (!body) return "No response from Microsoft.";
+  const text = String(body.error_description || body.error || "Unknown error.");
+  // Microsoft appends trace and correlation IDs; keep the message itself.
+  const message = text.split(/\r?\n/)[0].replace(/\s*Trace ID:.*$/, "");
+  const code = (message.match(/AADSTS\d+/) || [])[0];
+  return code && AUTH_HINTS[code] ? `${message} ${AUTH_HINTS[code]}` : message;
+}
+
+function jwtClaims(token) {
+  try {
+    const part = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(
+      atob(part)
+        .split("")
+        .map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("")
+    );
+    return JSON.parse(json);
+  } catch (_) {
+    return null;
+  }
+}
+
+function retryDelay(headers, attempt) {
+  const header = Object.entries(headers || {}).find(([key]) => key.toLowerCase() === "retry-after");
+  const seconds = header ? parseInt(header[1], 10) : NaN;
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 60) : Math.min(60, 2 ** (attempt + 1));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+// Runs fn over items with at most `limit` in flight, keeping results in order.
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}

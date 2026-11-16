@@ -219,3 +219,38 @@
 .sb-todo-done {
   color: var(--text-faint);
 }
+
+/* Signed-out panel and the sign-in dialog. */
+.sb-todo-signin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  align-items: flex-start;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.sb-todo-signin-code {
+  margin: var(--size-4-4) 0;
+  text-align: center;
+}
+
+.sb-todo-signin-code code {
+  font-size: 1.8em;
+  letter-spacing: 0.15em;
+  padding: var(--size-4-2) var(--size-4-4);
+  user-select: all;
+}
+
+.sb-todo-signin-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  justify-content: center;
+}
+
+.sb-todo-signin-hint {
+  margin-top: var(--size-4-2);
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
