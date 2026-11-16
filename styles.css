@@ -254,3 +254,18 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
+
+/* Beside a group's title: how many of its tasks the active note holds. */
+.sb-todo-group-in-note {
+  display: inline-flex;
+  gap: var(--size-4-1);
+  margin-left: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  font-weight: normal;
+  color: var(--color-green);
+  opacity: 0.85;
+}
+
+.sb-todo-group-in-note:empty {
+  display: none;
+}

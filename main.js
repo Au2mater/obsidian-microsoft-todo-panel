@@ -427,6 +427,9 @@ class TodoPanelView extends ItemView {
       const done = group.items.filter((e) => e.task.completed).length;
       summary.createSpan({ cls: "sb-todo-count", text: String(group.items.length - done) });
       if (done) summary.createSpan({ cls: "sb-todo-done-count", text: `+${done} done` });
+      // Filled in by updateNoteMatches: how many of the group's tasks the
+      // active note holds, visible whether the group is open or collapsed.
+      summary.createSpan({ cls: "sb-todo-group-in-note" });
       if (group.items.length === 0) {
         details.createDiv({ cls: "sb-todo-empty", text: "Nothing here" });
       }
@@ -504,6 +507,22 @@ class TodoPanelView extends ItemView {
     }
     if (!this.listsEl) return;
     for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) this.markNoteMatch(row);
+    for (const group of this.listsEl.querySelectorAll(".sb-todo-list")) this.markGroupNoteMatches(group);
+  }
+
+  // "○2 ✓1" beside a group's title: its tasks in the active note, open and
+  // ticked off. Empty, and so hidden, when the note holds none of them.
+  markGroupNoteMatches(group) {
+    const label = group.querySelector(".sb-todo-group-in-note");
+    if (!label) return;
+    const checked = group.querySelectorAll(".sb-todo-task.is-checked-in-note").length;
+    const open = group.querySelectorAll(".sb-todo-task.is-in-note").length - checked;
+    label.empty();
+    if (open) label.createSpan({ cls: "is-open", text: `○${open}` });
+    if (checked) label.createSpan({ cls: "is-checked", text: `✓${checked}` });
+    const where = this.noteName || "the active note";
+    const parts = [open && `${open} open`, checked && `${checked} ticked off`].filter(Boolean);
+    label.setAttr("title", parts.length ? `In ${where}: ${parts.join(", ")}` : "");
   }
 
   markNoteMatch(row) {

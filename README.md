@@ -16,7 +16,9 @@ drag starts in this panel instead.
 - A task the active note already contains is marked **○ In note**, or
   **✓ In note** once a matching line is ticked with `[x]` (`[<]`, `[>]` and
   other marks do not count). Matching ignores case, indentation, whitespace,
-  the checkbox, and trailing emojis, dates and links.
+  the checkbox, and trailing emojis, dates and links. Each group's title
+  shows how many of its tasks the note holds, such as `○2 ✓1`, open or
+  collapsed.
 - A compact toggle shows recently completed tasks, struck through, after the
   open tasks of each group. Dropping one inserts `- [x]`.
 
