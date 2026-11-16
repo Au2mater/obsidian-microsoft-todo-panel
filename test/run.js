@@ -326,7 +326,7 @@ test("the completed filter starts at local midnight N days ago", () => {
   assert.strictEqual(taskFilter(0), "status ne 'completed'");
 });
 
-test("clicking a task the note holds selects its line; others are added below the cursor", async () => {
+test("clicking a task the note holds selects its line; + adds others below the cursor", async () => {
   const plugin = await signedInPlugin();
   let text = ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "    - [x] Book venue"];
   const calls = [];
@@ -365,12 +365,15 @@ test("clicking a task the note holds selects its line; others are added below th
   plugin.app.workspace.getMostRecentLeaf = () => ({ view });
   plugin.app.workspace.setActiveLeaf = (leaf) => calls.push(["activate", leaf.id]);
   const list = { id: "L", name: "Inbox" };
-  await plugin.showOrInsert({ id: "1", title: "send  SLIDES", due_date: null }, list);
+  await plugin.showInNote({ id: "2", title: "Something new", due_date: null }, list);
+  assert.deepStrictEqual(calls, [], "clicking a task the note lacks does nothing");
+  assert.strictEqual(view.mode, "preview");
+  await plugin.showInNote({ id: "1", title: "send  SLIDES", due_date: null }, list);
   assert.strictEqual(view.mode, "source", "switched out of reading view");
   assert.deepStrictEqual(calls[0], ["activate", "note"]);
   assert.deepStrictEqual(calls[1], ["select", { line: 2, ch: 0 }, { line: 2, ch: text[2].length }]);
   calls.length = 0;
-  await plugin.showOrInsert({ id: "2", title: "Something new", due_date: null }, list);
+  await plugin.addToNote({ id: "2", title: "Something new", due_date: null }, list);
   assert.deepStrictEqual(text, ["# Day", "", "- [ ] Send slides 📅 2026-11-20", "    - [x] Book venue", "    - [ ] Something new"]);
   assert.ok(calls.some((c) => c[0] === "cursor" && c[1].line === 4), "cursor moves to the new line");
 });

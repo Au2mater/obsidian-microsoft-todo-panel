@@ -181,6 +181,11 @@
   display: inline;
 }
 
+/* Clicking a task the note holds shows it there. */
+.sb-todo-task.is-in-note {
+  cursor: pointer;
+}
+
 .sb-todo-task.is-in-note .sb-todo-marker {
   border-color: var(--color-green);
 }
@@ -319,4 +324,44 @@
 .sb-todo-notes a {
   color: var(--link-external-color, var(--text-accent));
   overflow-wrap: anywhere;
+}
+
+/* The + button that adds a task to the note: faint until the row is hovered,
+   hidden once the note holds the task. */
+.sb-todo-add {
+  flex: none;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.sb-todo-add svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sb-todo-task:hover .sb-todo-add,
+.sb-todo-add:focus-visible {
+  opacity: 1;
+  color: var(--text-muted);
+}
+
+.sb-todo-add:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.sb-todo-task.is-in-note .sb-todo-add {
+  visibility: hidden;
 }

@@ -1,8 +1,8 @@
 // Microsoft To Do Panel: a sidebar listing Microsoft To Do tasks. The plugin signs in
 // to Microsoft itself (OAuth device code flow, read-only Tasks permission) and
 // reads tasks from Microsoft Graph. Dragging a task into a note inserts it as
-// a Markdown line; clicking a task adds it below the cursor, or selects its
-// line when the note already holds it.
+// a Markdown line, and so does its + button, below the cursor; clicking a
+// task the note already holds selects that line.
 //
 // Plain JavaScript with no dependencies: `npm run build` checks this file and
 // writes it unchanged to main.js, the file Obsidian loads (see README.md).
@@ -252,31 +252,42 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return view && view.file ? { file: view.file, text: view.getViewData() } : null;
   }
 
-  // Clicking a task: when the note being worked in already holds it, select
-  // that line and scroll to it; otherwise add the task on a new line below
-  // the cursor's line, indented like it.
-  async showOrInsert(task, list) {
+  // The note to act on, switched out of reading view and made active, so its
+  // editor can select or insert. Null, with a notice, when no note is open.
+  async noteEditor() {
     const view = this.noteView();
     if (!view) {
-      new Notice("Open a note first, then click the task.");
-      return;
+      new Notice("Open a note first.");
+      return null;
     }
-    // Selecting and inserting happen in the editor, so leave reading view.
     if (view.getMode() === "preview") await view.setState({ ...view.getState(), mode: "source" }, { history: false });
     this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
-    const editor = view.editor;
+    return view.editor;
+  }
+
+  // Clicking a task the note already holds selects that line and scrolls to
+  // it. Clicking any other task does nothing; its + button adds it.
+  async showInNote(task, list) {
+    const view = this.noteView();
+    if (!view) return;
     // Read the note as it is now, not as the markers last saw it.
-    const lines = noteTaskLines(editor.getValue());
-    const rendered = this.renderTask(task, list);
-    const line = findTaskLine(lines, normalizedTitle(task), rendered.trim());
-    if (line >= 0) {
-      const from = { line, ch: 0 };
-      const to = { line, ch: editor.getLine(line).length };
-      editor.setSelection(from, to);
-      editor.scrollIntoView({ from, to }, true);
-    } else {
-      insertOnOwnLine(editor, rendered);
-    }
+    const line = findTaskLine(noteTaskLines(view.getViewData()), normalizedTitle(task), this.renderTask(task, list).trim());
+    if (line < 0) return;
+    const editor = await this.noteEditor();
+    if (!editor) return;
+    const from = { line, ch: 0 };
+    const to = { line, ch: editor.getLine(line).length };
+    editor.setSelection(from, to);
+    editor.scrollIntoView({ from, to }, true);
+    editor.focus();
+  }
+
+  // The + button: adds the task on a new line below the cursor's line,
+  // indented like it.
+  async addToNote(task, list) {
+    const editor = await this.noteEditor();
+    if (!editor) return;
+    insertOnOwnLine(editor, this.renderTask(task, list));
     editor.focus();
   }
 };
@@ -437,7 +448,7 @@ class TodoPanelView extends ItemView {
       this.statusEl.createDiv({ cls: "sb-todo-error", text: this.error });
     } else if (this.fetchedAt) {
       const time = this.fetchedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      this.statusEl.setText(`Updated ${time} · drag or click a task to add it`);
+      this.statusEl.setText(`Updated ${time} · drag a task into a note, or use +`);
     }
   }
 
@@ -628,6 +639,14 @@ class TodoPanelView extends ItemView {
     metaEl.createSpan({ cls: "sb-todo-in-note", text: "In note" });
     for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
     if (task.notes) this.renderNotes(body, metaEl, task);
+    // A deliberate button to add the task, so a stray click never edits a
+    // note. Hidden while the note already holds the task.
+    const add = row.createEl("button", { cls: "sb-todo-add", attr: { "aria-label": "Add to note" } });
+    setIcon(add, "plus");
+    add.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.plugin.addToNote(task, list);
+    });
     row.sbEntry = { task, list };
     this.markNoteMatch(row);
 
@@ -639,8 +658,8 @@ class TodoPanelView extends ItemView {
       row.addClass("is-dragging");
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
-    // A task the note already holds is shown there; any other is inserted.
-    row.addEventListener("click", () => this.plugin.showOrInsert(task, list));
+    // A task the note already holds is shown there.
+    row.addEventListener("click", () => this.plugin.showInNote(task, list));
   }
 
   // A "Notes" toggle in the meta line that shows the task's notes under it.
@@ -791,7 +810,7 @@ class TodoPanelSettingTab extends PluginSettingTab {
     this.text(
       containerEl,
       "Task template",
-      "What a dragged or clicked task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
+      "What an added task becomes. Placeholders: {{title}}, {{due}}, {{date}}, {{list}}, {{link}}, {{id}}.",
       "template"
     );
 
