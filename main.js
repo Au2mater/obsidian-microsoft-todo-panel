@@ -114,12 +114,8 @@ module.exports = class TodoPanelPlugin extends Plugin {
     return fetchTodoLists(this.auth, Math.max(0, Number(this.settings.completedDays) || 0));
   }
 
-  // Opens the sign-in dialog, or says what is missing first.
+  // Opens the sign-in dialog; it asks for the app's IDs first when missing.
   signIn() {
-    if (!this.settings.clientId.trim()) {
-      new Notice("Add your app's client ID under Settings → To Do Panel first.");
-      return;
-    }
     if (this.signInModal) return;
     this.signInModal = new SignInModal(this.app, this);
     this.signInModal.open();
@@ -311,15 +307,9 @@ class TodoPanelView extends ItemView {
     if (!this.plugin.auth.signedIn && !this.loading) {
       const box = this.statusEl.createDiv({ cls: "sb-todo-signin" });
       if (this.error) box.createDiv({ cls: "sb-todo-error", text: this.error });
-      if (!this.plugin.settings.clientId.trim()) {
-        box.createDiv({
-          text: "To show your tasks, register an app with Microsoft and add its client ID under Settings → To Do Panel. The README explains how.",
-        });
-      } else {
-        box.createDiv({ text: "Sign in to Microsoft to show your To Do tasks." });
-        const button = box.createEl("button", { cls: "mod-cta", text: "Sign in" });
-        button.addEventListener("click", () => this.plugin.signIn());
-      }
+      box.createDiv({ text: "Sign in to Microsoft to show your To Do tasks." });
+      const button = box.createEl("button", { cls: "mod-cta", text: "Sign in" });
+      button.addEventListener("click", () => this.plugin.signIn());
     } else if (this.loading) {
       this.statusEl.setText("Loading tasks…");
     } else if (this.error) {
@@ -911,8 +901,49 @@ class SignInModal extends Modal {
   }
 
   async onOpen() {
-    const { contentEl } = this;
     this.setTitle("Sign in to Microsoft");
+    if (!this.plugin.settings.clientId.trim()) this.askForApp();
+    else this.startSignIn();
+  }
+
+  // First sign-in: the app registration's IDs, which the device code needs.
+  askForApp() {
+    const { contentEl } = this;
+    const s = this.plugin.settings;
+    contentEl.createDiv({
+      cls: "sb-todo-signin-status",
+      text: "Enter the IDs of the app you registered in Microsoft Entra. The plugin's README explains how to register one.",
+    });
+    let clientId = "";
+    let tenant = s.tenant || "common";
+    new Setting(contentEl)
+      .setName("Client ID")
+      .setDesc("Application (client) ID")
+      .addText((text) => text.setPlaceholder("00000000-0000-0000-0000-000000000000").onChange((v) => (clientId = v.trim())));
+    new Setting(contentEl)
+      .setName("Tenant")
+      .setDesc("Directory (tenant) ID for an app limited to your organisation; otherwise common or consumers.")
+      .addText((text) => text.setValue(tenant).onChange((v) => (tenant = v.trim())));
+    new Setting(contentEl).addButton((button) =>
+      button
+        .setButtonText("Continue")
+        .setCta()
+        .onClick(async () => {
+          if (!clientId) {
+            new Notice("Enter the client ID.");
+            return;
+          }
+          s.clientId = clientId;
+          s.tenant = tenant || "common";
+          await this.plugin.saveSettings();
+          contentEl.empty();
+          this.startSignIn();
+        })
+    );
+  }
+
+  async startSignIn() {
+    const { contentEl } = this;
     const status = contentEl.createDiv({ cls: "sb-todo-signin-status", text: "Asking Microsoft for a sign-in code…" });
     let flow;
     try {

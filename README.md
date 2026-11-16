@@ -51,7 +51,7 @@ takes about five minutes and keeps your tasks between you and Microsoft.
 
 ### 2. Connect the plugin
 
-1. In Obsidian, open **Settings → To Do Panel**.
+1. Open the panel and select **Sign in**, or open **Settings → To Do Panel**.
 2. Paste the client ID into **Client ID**.
 3. Set **Tenant**:
    - your directory (tenant) ID for an app limited to your organisation;
