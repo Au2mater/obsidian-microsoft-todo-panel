@@ -23,6 +23,7 @@ class Plugin {
         onLayoutReady: (fn) => (global.__layoutReady = fn),
       },
       vault: { on: () => ({}), getName: () => "Test vault" },
+      metadataCache: { getFileCache: () => global.__fileCache || null },
       secrets: store,
       local: {},
       loadLocalStorage(key) {

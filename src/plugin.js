@@ -285,9 +285,16 @@ module.exports = class TodoPanelPlugin extends Plugin {
   // The + button: adds the task on a new line below the cursor's line,
   // indented like it.
   async addToNote(task, list) {
+    const view = this.noteView();
     const editor = await this.noteEditor();
     if (!editor) return;
-    insertOnOwnLine(editor, this.renderTask(task, list));
+    // Never inside the note's properties: below them when the cursor is in
+    // them (as it is in a note opened but not yet clicked into).
+    const cache = view && view.file ? this.app.metadataCache.getFileCache(view.file) : null;
+    const properties = cache && cache.frontmatterPosition;
+    let line = editor.getCursor().line;
+    if (properties && line <= properties.end.line) line = properties.end.line;
+    insertOnOwnLine(editor, this.renderTask(task, list).trim(), line);
     editor.focus();
   }
 };
@@ -339,13 +346,13 @@ class TodoPanelView extends ItemView {
     this.completedEl.addEventListener("click", () => {
       this.plugin.settings.showCompleted = !this.plugin.settings.showCompleted;
       this.plugin.saveSettings();
-      this.renderLists();
+      this.plugin.panels().forEach((view) => view.renderLists());
     });
     this.inNoteEl = toolbar.createEl("button", { cls: "sb-todo-toggle" });
     this.inNoteEl.addEventListener("click", () => {
       this.plugin.settings.onlyInNote = !this.plugin.settings.onlyInNote;
       this.plugin.saveSettings();
-      this.renderLists();
+      this.plugin.panels().forEach((view) => view.renderLists());
     });
     this.toggleAllEl = toolbar.createEl("button");
     this.toggleAllEl.addEventListener("click", () => this.toggleAll());
@@ -482,7 +489,13 @@ class TodoPanelView extends ItemView {
     const groups = this.groups();
     const collapsed = this.collapsedSet();
     const anyOpen = groups.some((g) => !collapsed.has(g.key));
-    this.setCollapsed(anyOpen ? new Set(groups.map((g) => g.key)) : new Set());
+    // Only the groups on screen change; hidden ones (filtered out, or lists
+    // with nothing to show) keep their state.
+    for (const g of groups) {
+      if (anyOpen) collapsed.add(g.key);
+      else collapsed.delete(g.key);
+    }
+    this.setCollapsed(collapsed);
     this.renderLists();
   }
 
@@ -567,7 +580,13 @@ class TodoPanelView extends ItemView {
     const collapsed = this.collapsedSet();
     this.inNoteSignature = this.inNoteIds();
     if (this.plugin.settings.onlyInNote && groups.length === 0 && this.lists.length) {
-      const text = this.noteLines ? "None of your tasks are in this note yet." : "Open a note to see the tasks it holds.";
+      const text = !this.noteLines
+        ? "Open a note to see the tasks it holds."
+        : this.filter
+          ? "No task in this note matches the filter."
+          : this.inNoteIds()
+            ? "This note's tasks are all completed; show completed tasks to see them."
+            : "None of your tasks are in this note yet.";
       this.listsEl.createDiv({ cls: "sb-todo-empty", text });
     }
 
@@ -645,7 +664,7 @@ class TodoPanelView extends ItemView {
     setIcon(add, "plus");
     add.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      this.plugin.addToNote(task, list);
+      this.plugin.addToNote(task, list).catch((e) => new Notice(`Could not add the task: ${e.message}`));
     });
     row.sbEntry = { task, list };
     this.markNoteMatch(row);
@@ -659,7 +678,9 @@ class TodoPanelView extends ItemView {
     });
     row.addEventListener("dragend", () => row.removeClass("is-dragging"));
     // A task the note already holds is shown there.
-    row.addEventListener("click", () => this.plugin.showInNote(task, list));
+    row.addEventListener("click", () => {
+      this.plugin.showInNote(task, list).catch((e) => new Notice(`Could not show the task: ${e.message}`));
+    });
   }
 
   // A "Notes" toggle in the meta line that shows the task's notes under it.
@@ -1406,13 +1427,14 @@ function localDayFromUtc(value) {
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
-// Adds text as a line of its own at the cursor: on the cursor's line when it
-// is blank, otherwise on a new line below it, with the same indentation.
-function insertOnOwnLine(editor, text) {
-  const { line } = editor.getCursor();
+// Adds text as a line of its own at a line (the cursor's by default): on that
+// line when it is blank, otherwise on a new line below it, with the same
+// indentation.
+function insertOnOwnLine(editor, text, line = editor.getCursor().line) {
   const current = editor.getLine(line);
   const indent = current.match(/^[ \t]*/)[0];
-  const blank = !current.trim();
+  // A line with only a list marker ("- ", "- [ ] ") is taken over too.
+  const blank = !current.trim() || isBareListMarker(current);
   const target = blank ? line : line + 1;
   editor.transaction({
     changes: [
@@ -1422,6 +1444,10 @@ function insertOnOwnLine(editor, text) {
     ],
   });
   editor.setCursor({ line: target, ch: indent.length + text.length });
+}
+
+function isBareListMarker(line) {
+  return /^\s*(?:[-*+]|\d+[.)])\s*(?:\[.\]\s*)?$/.test(line);
 }
 
 // Splits plain text into text and web-link parts, for showing links as links.
@@ -1462,6 +1488,12 @@ function placeOnOwnLine(editor, text) {
   if (!before.trim() && !after.trim()) return;
   const remaining = before + after;
   const indent = remaining.match(/^[ \t]*/)[0];
+  // Dropped on an empty bullet ("- ", "- [ ] "): the task replaces it.
+  if (isBareListMarker(remaining)) {
+    editor.transaction({ changes: [{ from: { line: from.line, ch: 0 }, to: { line: from.line, ch: line.length }, text: indent + text }] });
+    editor.setSelection({ line: from.line, ch: indent.length }, { line: from.line, ch: indent.length + text.length });
+    return;
+  }
   const atStart = !before.trim();
   const target = atStart ? from.line : from.line + 1;
   // One transaction, so a single undo reverts the move.

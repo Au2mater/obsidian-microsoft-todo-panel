@@ -424,6 +424,10 @@ test("a task dropped inside a line moves to a line of its own", () => {
   ed = fakeEditor([`\t${task}\t- Item`], { line: 0, ch: 1 }, { line: 0, ch: 1 + task.length });
   placeOnOwnLine(ed, task);
   assert.deepStrictEqual(ed.lines, [`\t\t${task}`, "\t\t- Item"], "the line was indented by two tabs before the drop");
+  // Dropped on an empty bullet: the task replaces it.
+  ed = fakeEditor([`  - ${task}`], { line: 0, ch: 4 }, { line: 0, ch: 4 + task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, [`  ${task}`]);
   // Dropped on an empty line: left alone.
   ed = fakeEditor(["a", task, "b"], { line: 1, ch: 0 }, { line: 1, ch: task.length });
   placeOnOwnLine(ed, task);
@@ -461,6 +465,51 @@ test("links in task notes are found, without trailing punctuation", () => {
   );
   assert.strictEqual(parts.map((p) => p.text).join(""), "See https://example.com/a?b=1. Also (https://x.org/y) and https://w.io/p_(1)!");
   assert.deepStrictEqual(splitLinks("no links"), [{ text: "no links" }]);
+});
+
+test("+ never adds a task inside the note's properties", async () => {
+  const plugin = await signedInPlugin();
+  let text = ["---", "tags: [a]", "---", "Body"];
+  const editor = {
+    getValue: () => text.join("\n"),
+    getCursor: () => ({ line: 0, ch: 0 }),
+    getLine: (n) => text[n],
+    transaction({ changes }) {
+      const c = changes[0];
+      const lines = text.slice();
+      lines[c.from.line] = lines[c.from.line].slice(0, c.from.ch) + c.text + lines[c.from.line].slice(c.to.ch);
+      text = lines.join("\n").split("\n");
+    },
+    setCursor() {},
+    focus() {},
+  };
+  const { MarkdownView } = require("./obsidian-stub.js");
+  const view = Object.assign(new MarkdownView(), { editor, leaf: {}, file: { path: "n.md" }, getMode: () => "source" });
+  plugin.app.workspace.getActiveViewOfType = () => view;
+  global.__fileCache = { frontmatterPosition: { start: { line: 0 }, end: { line: 2 } } };
+  await plugin.addToNote({ id: "1", title: "Task", due_date: null }, { id: "L", name: "Inbox" });
+  global.__fileCache = null;
+  assert.deepStrictEqual(text, ["---", "tags: [a]", "---", "- [ ] Task", "Body"]);
+});
+
+test("collapse all changes only the groups on screen", async () => {
+  await signedInPlugin();
+  const plugin = new TodoPanelPlugin();
+  await plugin.onload();
+  plugin.settings.tab = "dates";
+  plugin.settings.collapsed = { lists: [], dates: ["date:none"] };
+  const view = global.__viewFactory({});
+  view.plugin = plugin;
+  const today = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const iso = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  view.lists = [{ id: "L", name: "Inbox", tasks: [{ id: "a", title: "Today task", due_date: iso }, { id: "b", title: "Undated", due_date: null }] }];
+  view.noteLines = noteTaskLines("- [ ] Today task");
+  plugin.settings.onlyInNote = true;
+  view.toggleAll(); // only Today is on screen
+  assert.deepStrictEqual(plugin.settings.collapsed.dates.sort(), ["date:none", "date:today"]);
+  view.toggleAll();
+  assert.deepStrictEqual(plugin.settings.collapsed.dates, ["date:none"], "No date stays collapsed");
 });
 
 test("HTML task notes become plain text", async () => {
