@@ -245,12 +245,24 @@ class TodoPanelView extends ItemView {
 
   renderTask(parent, task, list, today) {
     const row = parent.createDiv({ cls: "sb-todo-task", attr: { draggable: "true" } });
-    if (task.importance === "high") row.createSpan({ cls: "sb-todo-important" });
-    row.createSpan({ cls: "sb-todo-title", text: task.title });
+    // A marker per task, with wrapped title lines hanging beside it, so a
+    // continuation line never looks like the start of the next task.
+    const marker = row.createSpan({ cls: "sb-todo-marker", attr: { "aria-hidden": "true" } });
+    if (task.importance === "high") marker.addClass("is-important");
+
+    const body = row.createDiv({ cls: "sb-todo-body" });
+    body.createDiv({ cls: "sb-todo-title", text: task.title });
+
+    const meta = [];
+    if (task.importance === "high") meta.push(["sb-todo-flag", "Important"]);
     if (task.due_date) {
-      const due = row.createSpan({ cls: "sb-todo-due", text: shortDate(task.due_date) });
-      if (task.due_date < today) due.addClass("is-overdue");
-      else if (task.due_date === today) due.addClass("is-today");
+      const state = task.due_date < today ? " is-overdue" : task.due_date === today ? " is-today" : "";
+      meta.push([`sb-todo-due${state}`, shortDate(task.due_date)]);
+    }
+    if (task.notes) meta.push(["sb-todo-has-notes", "Notes"]);
+    if (meta.length) {
+      const metaEl = body.createDiv({ cls: "sb-todo-meta" });
+      for (const [cls, text] of meta) metaEl.createSpan({ cls, text });
     }
     if (task.notes) row.setAttr("title", task.notes);
 

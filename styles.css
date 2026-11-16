@@ -39,14 +39,25 @@
   margin-left: var(--size-4-1);
 }
 
+.sb-todo-list {
+  margin-bottom: var(--size-4-2);
+}
+
 .sb-todo-task {
   display: flex;
   gap: var(--size-4-2);
-  align-items: baseline;
-  padding: var(--size-4-1) var(--size-4-2);
+  align-items: flex-start;
+  padding: var(--size-4-2) var(--size-4-2);
   border-radius: var(--radius-s);
   cursor: grab;
   user-select: none;
+}
+
+/* A hairline between tasks; a wrapped line never crosses it. */
+.sb-todo-task + .sb-todo-task {
+  border-top: 1px solid var(--background-modifier-border);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .sb-todo-task:hover {
@@ -57,16 +68,41 @@
   opacity: 0.5;
 }
 
-.sb-todo-title {
+/* Hollow circle like To Do's own, sitting on the first line of the title. */
+.sb-todo-marker {
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  margin-top: 0.25em;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 50%;
+}
+
+.sb-todo-marker.is-important {
+  border-color: var(--text-error);
+}
+
+.sb-todo-task:hover .sb-todo-marker {
+  border-color: var(--interactive-accent);
+}
+
+.sb-todo-body {
   flex: 1;
   min-width: 0;
+}
+
+.sb-todo-title {
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
-.sb-todo-due {
+.sb-todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1) var(--size-4-3);
+  margin-top: 2px;
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  white-space: nowrap;
 }
 
 .sb-todo-due.is-today {
@@ -77,8 +113,6 @@
   color: var(--text-error);
 }
 
-.sb-todo-important::before {
-  content: "!";
+.sb-todo-flag {
   color: var(--text-error);
-  font-weight: var(--font-bold);
 }
