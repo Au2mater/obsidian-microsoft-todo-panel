@@ -16,13 +16,13 @@ Module._resolveFilename = function (request, ...rest) {
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter } = TodoPanelPlugin.__internals;
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine } = TodoPanelPlugin.__internals;
 
 global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout() {}, setInterval, clearInterval };
 global.atob = global.atob || ((s) => Buffer.from(s, "base64").toString("binary"));
@@ -368,6 +368,53 @@ test("clicking a task the note holds selects its line; other clicks do nothing",
   await plugin.showInNote({ id: "2", title: "Something new", due_date: null }, list);
   assert.deepStrictEqual(calls, [], "nothing selected, inserted or activated");
   assert.strictEqual(view.mode, "preview", "the note stays in reading view");
+});
+
+// A tiny editor over an array of lines, with the drop's selection.
+function fakeEditor(lines, from, to) {
+  let text = lines.join("\n");
+  let selection = { anchor: from, head: to };
+  const offset = (pos) => text.split("\n").slice(0, pos.line).reduce((n, l) => n + l.length + 1, 0) + pos.ch;
+  return {
+    get lines() {
+      return text.split("\n");
+    },
+    get selection() {
+      return selection;
+    },
+    listSelections: () => [selection],
+    getLine: (n) => text.split("\n")[n],
+    getRange: (a, b) => text.slice(offset(a), offset(b)),
+    transaction({ changes }) {
+      for (const c of changes) text = text.slice(0, offset(c.from)) + c.text + text.slice(offset(c.to));
+    },
+    setSelection: (anchor, head) => (selection = { anchor, head }),
+  };
+}
+
+test("a task dropped inside a line moves to a line of its own", () => {
+  const task = "- [ ] Send slides";
+  // Dropped mid-sentence: the sentence stays whole, the task goes below it.
+  let ed = fakeEditor([`Call Ann ${task}about the budget`, "next"], { line: 0, ch: 9 }, { line: 0, ch: 9 + task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, ["Call Ann about the budget", task, "next"]);
+  assert.deepStrictEqual(ed.selection, { anchor: { line: 1, ch: 0 }, head: { line: 1, ch: task.length } });
+  // Dropped at the start of a line: the task goes above it.
+  ed = fakeEditor([`${task}First line`], { line: 0, ch: 0 }, { line: 0, ch: task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, [task, "First line"]);
+  // Dropped at the end of a line.
+  ed = fakeEditor([`Notes:${task}`], { line: 0, ch: 6 }, { line: 0, ch: 6 + task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, ["Notes:", task]);
+  // Dropped on an empty line: left alone.
+  ed = fakeEditor(["a", task, "b"], { line: 1, ch: 0 }, { line: 1, ch: task.length });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, ["a", task, "b"]);
+  // The selection is not the dropped text (something else happened): left alone.
+  ed = fakeEditor(["Call Ann about it"], { line: 0, ch: 0 }, { line: 0, ch: 4 });
+  placeOnOwnLine(ed, task);
+  assert.deepStrictEqual(ed.lines, ["Call Ann about it"]);
 });
 
 test("HTML task notes become plain text", async () => {

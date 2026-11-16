@@ -1,7 +1,8 @@
 # Microsoft To Do Panel for Obsidian
 
 A sidebar in Obsidian that lists your Microsoft To Do tasks. Drag a task into
-a note to insert it as a Markdown task line. Click a task the note already
+a note to insert it as a Markdown task line; it always lands on a line of its
+own, never inside an existing line. Click a task the note already
 holds to select its line there. Select **Notes** under a task to read its
 notes.
 

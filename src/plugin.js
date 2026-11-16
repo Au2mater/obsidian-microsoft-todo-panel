@@ -81,6 +81,18 @@ module.exports = class TodoPanelPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.scheduleNoteCheck(50)));
     this.registerEvent(this.app.workspace.on("file-open", () => this.scheduleNoteCheck(50)));
     this.registerEvent(this.app.workspace.on("editor-change", () => this.scheduleNoteCheck(300)));
+
+    // A task dropped into a note lands on a line of its own. The editor
+    // inserts the dragged text at the drop point itself; right after, the
+    // task is moved off any line it was dropped into the middle of.
+    this.registerEvent(
+      this.app.workspace.on("editor-drop", (evt, editor) => {
+        const dt = evt.dataTransfer;
+        if (!dt || !Array.from(dt.types || []).includes(DRAG_TYPE)) return;
+        const text = dt.getData("text/plain");
+        window.setTimeout(() => placeOnOwnLine(editor, text), 0);
+      })
+    );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file === this.app.workspace.getActiveFile()) this.scheduleNoteCheck(300);
@@ -1326,6 +1338,36 @@ function localDayFromUtc(value) {
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
+
+// After a drop, the editor selects the text it inserted. If that text landed
+// inside a line with other text, take it out again and put it on a new line
+// below that line, or above it when dropped at the line's start, so no line
+// is split. Does nothing when the selection is not the dropped text.
+function placeOnOwnLine(editor, text) {
+  if (!text || text.includes("\n")) return;
+  const selection = editor.listSelections()[0];
+  if (!selection) return;
+  const [from, to] = [selection.anchor, selection.head].sort((a, b) => a.line - b.line || a.ch - b.ch);
+  if (from.line !== to.line || editor.getRange(from, to) !== text) return;
+  const line = editor.getLine(from.line);
+  const before = line.slice(0, from.ch);
+  const after = line.slice(to.ch);
+  if (!before.trim() && !after.trim()) return;
+  const remaining = before + after;
+  const atStart = !before.trim();
+  const target = atStart ? from.line : from.line + 1;
+  // One transaction, so a single undo reverts the move.
+  editor.transaction({
+    changes: [
+      {
+        from: { line: from.line, ch: 0 },
+        to: { line: from.line, ch: line.length },
+        text: atStart ? `${text}\n${remaining}` : `${remaining}\n${text}`,
+      },
+    ],
+  });
+  editor.setSelection({ line: target, ch: 0 }, { line: target, ch: text.length });
+}
 
 // Plain text from a task's HTML notes, for display as text only (never as
 // HTML): line breaks kept, tags dropped, common entities decoded.
