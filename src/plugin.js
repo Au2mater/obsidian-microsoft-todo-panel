@@ -57,6 +57,8 @@ const DEFAULT_SETTINGS = {
 // options folded into fixed behaviour in 1.2.
 const RETIRED_SETTINGS = ["command", "timeoutSeconds", "linkFormat", "hideEmptyLists"];
 // What {{link}} in the task template becomes.
+// How long a task shown from a note flashes; matches styles.css.
+const REVEAL_FLASH_MS = 1600;
 const TASK_LINK_FORMAT = "https://to-do.office.com/tasks/id/{{id}}/details";
 
 module.exports = class TodoPanelPlugin extends Plugin {
@@ -515,6 +517,8 @@ class TodoPanelView extends ItemView {
   // Shows one task: brings back a row that the filter or a toggle hides,
   // opens its group, scrolls to it and flashes it.
   reveal(id) {
+    // A flash still running for another task stops; redraws below skip it.
+    this.revealed = null;
     let row = this.rowsById && this.rowsById.get(id);
     if (!row) {
       const list = this.lists.find((l) => l.tasks.some((t) => t.id === id));
@@ -545,10 +549,28 @@ class TodoPanelView extends ItemView {
       }
       if (!row) return;
     }
-    const group = row.closest("details");
     // Opened as if by hand, so it stays open.
+    const group = row.closest("details");
     if (group && !group.open) group.open = true;
+    this.revealed = { id, at: Date.now() };
+    this.showRevealed();
+  }
+
+  // Scrolls to the task shown last and flashes it. A redraw during the flash
+  // (a panel that just opened refreshes straight away) rebuilds the rows, so
+  // renderLists calls this again and the flash carries on where it was.
+  showRevealed() {
+    const revealed = this.revealed;
+    if (!revealed) return;
+    const elapsed = Date.now() - revealed.at;
+    if (elapsed >= REVEAL_FLASH_MS) {
+      this.revealed = null;
+      return;
+    }
+    const row = this.rowsById && this.rowsById.get(revealed.id);
+    if (!row) return;
     row.scrollIntoView({ block: "center" });
+    row.style.animationDelay = `-${elapsed}ms`;
     row.removeClass("is-revealed");
     // Restarts the flash when the same task is shown twice in a row.
     void row.offsetWidth;
@@ -735,6 +757,7 @@ class TodoPanelView extends ItemView {
     }
     for (const el of this.listsEl.querySelectorAll(".sb-todo-list")) this.markGroupNoteMatches(el);
     this.updateToggleAll();
+    this.showRevealed();
     // Rows were marked against the note as last read; this re-reads it only
     // if the active note changed since.
     this.updateNoteMatches();

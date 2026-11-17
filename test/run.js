@@ -401,6 +401,7 @@ test("showing a task from a note undoes what hides it, opens its group and flash
   const flashes = [];
   const row = (id) => ({
     id,
+    style: {},
     closest: () => group,
     scrollIntoView: (opts) => flashes.push(["scroll", id, opts.block]),
     removeClass() {},
@@ -425,6 +426,27 @@ test("showing a task from a note undoes what hides it, opens its group and flash
   assert.strictEqual(plugin.settings.showCompleted, false, "nothing else changes");
   assert.strictEqual(group.open, true, "its group opens");
   assert.deepStrictEqual(flashes, [["scroll", "open", "center"], ["is-revealed", "open"]]);
+  // A redraw during the flash (the refresh of a panel that just opened)
+  // shows the new row and carries the flash on rather than losing it.
+  flashes.length = 0;
+  view.renderLists = function () {
+    this.rowsById = new Map([["open", row("open")]]);
+    this.showRevealed();
+  };
+  view.renderLists();
+  assert.deepStrictEqual(flashes, [["scroll", "open", "center"], ["is-revealed", "open"]]);
+  assert.match(view.rowsById.get("open").style.animationDelay, /^-\d+ms$/);
+  view.revealed.at -= 2000;
+  flashes.length = 0;
+  view.renderLists();
+  assert.deepStrictEqual(flashes, [], "nothing after the flash has ended");
+  view.renderLists = () => {
+    view.rowsById = new Map();
+    for (const task of view.lists[0].tasks) {
+      if (task.completed && !plugin.settings.showCompleted) continue;
+      view.rowsById.set(task.id, row(task.id));
+    }
+  };
   view.reveal("done");
   assert.strictEqual(plugin.settings.showCompleted, true, "completed tasks shown for a completed one");
   global.__notices = [];
