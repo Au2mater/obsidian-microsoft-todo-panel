@@ -438,7 +438,8 @@ class TodoPanelView extends ItemView {
     }
 
     this.statusEl = root.createDiv({ cls: "sb-todo-status" });
-    this.listsEl = root.createDiv();
+    // Only the lists scroll; the controls above them stay in place.
+    this.listsEl = root.createDiv({ cls: "sb-todo-lists" });
 
     // Show the lists from last time straight away, then refresh them.
     const cached = this.plugin.loadListCache();
