@@ -9,22 +9,26 @@ const path = require("path");
 
 // Load main.js against the stub, exposing its internal functions.
 const stubPath = path.join(__dirname, "obsidian-stub.js");
+const codemirrorStubPath = path.join(__dirname, "codemirror-stub.js");
 const realResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
-  return request === "obsidian" ? stubPath : realResolve.call(this, request, ...rest);
+  if (request === "obsidian") return stubPath;
+  if (request === "@codemirror/view" || request === "@codemirror/state") return codemirrorStubPath;
+  return realResolve.call(this, request, ...rest);
 };
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks } = TodoPanelPlugin.__internals;
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine } =
+  TodoPanelPlugin.__internals;
 
-global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout() {}, setInterval, clearInterval };
+global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout: (id) => id && clearImmediate(id), setInterval, clearInterval };
 global.atob = global.atob || ((s) => Buffer.from(s, "base64").toString("binary"));
 
 const LEGACY_SESSION = "todo-panel-microsoft-session";
@@ -296,6 +300,136 @@ test("a refresh asked for while one runs is queued, not dropped", async () => {
   await first;
   assert.strictEqual(calls, 2);
   finishers[1]([]);
+});
+
+test("note lines link to the task they hold, matched like the in-note markers", () => {
+  const render = (task) => `- [ ] ${task.title} [To Do](https://to-do/${task.id})`;
+  const lists = [
+    {
+      id: "L",
+      name: "Inbox",
+      tasks: [
+        { id: "done", title: "Send slides", completed: true },
+        { id: "open", title: "Send  SLIDES", completed: false },
+        { id: "emoji", title: "🎉", completed: false },
+      ],
+    },
+  ];
+  const index = buildTaskIndex(lists, render);
+  assert.strictEqual(taskIdForLine(index, "    - [x] send slides 📅 2026-11-20"), "open", "an open task wins a shared title");
+  assert.strictEqual(taskIdForLine(index, "1. Send slides"), "open");
+  assert.strictEqual(taskIdForLine(index, "Send slides"), null, "not a list item");
+  assert.strictEqual(taskIdForLine(index, "- [ ] 🎉 [To Do](https://to-do/emoji)"), "emoji", "the rendered line");
+  assert.strictEqual(taskIdForLine(index, `- [ ] Send slides ${"x".repeat(2000)}`), null, "long lines are skipped");
+  assert.strictEqual(taskIdForLine(index, "   "), null);
+  // The same lines the panel marks as in the note.
+  const marked = noteTaskLines("    - [x] send slides 📅 2026-11-20");
+  assert.ok(marked.titles.has(normalizeText("Send  SLIDES")));
+  assert.strictEqual(buildTaskIndex([], render), null, "no tasks, no index");
+});
+
+// A fake CodeMirror view over lines of text, showing the given line ranges.
+function fakeEditorView(lines, visible) {
+  const starts = [];
+  let pos = 0;
+  for (const text of lines) {
+    starts.push(pos);
+    pos += text.length + 1;
+  }
+  const line = (n) => ({ number: n, from: starts[n - 1], to: starts[n - 1] + lines[n - 1].length, text: lines[n - 1] });
+  const doc = {
+    lines: lines.length,
+    line,
+    lineAt: (p) => line(starts.filter((s) => s <= p).length),
+  };
+  const view = {
+    state: { doc },
+    visibleRanges: visible.map(([a, b]) => ({ from: line(a).from, to: line(b).to })),
+    dispatched: [],
+    dispatch(spec) {
+      this.dispatched.push(spec);
+    },
+  };
+  return view;
+}
+
+test("the editor links cover visible task lines only, and redraw when tasks change", async () => {
+  const plugin = await signedInPlugin();
+  const { cls } = global.__editorExtension;
+  const lists = [{ id: "L", name: "Inbox", tasks: [{ id: "1", title: "Send slides" }, { id: "2", title: "Book venue" }] }];
+  plugin.panels = () => [{ lists }];
+  plugin.tasksChanged();
+  const lines = ["- [ ] Send slides", "text", "- [ ] Book venue", "- [ ] Send slides", "- [ ] Book venue"];
+  // Two visible ranges that share line 3; line 5 is off screen.
+  const view = fakeEditorView(lines, [[1, 3], [3, 4]]);
+  const links = new cls(view);
+  assert.deepStrictEqual(
+    links.decorations.map((d) => [d.from, d.value.spec.widget.id]),
+    [[17, "1"], [39, "2"], [57, "1"]]
+  );
+  const built = links.decorations;
+  links.update({ docChanged: false, viewportChanged: false, transactions: [{ effects: [] }] });
+  assert.strictEqual(links.decorations, built, "moving the cursor does not rebuild");
+  // New tasks: every open editor is told to redraw, once.
+  await new Promise((resolve) => setImmediate(resolve));
+  view.dispatched = [];
+  plugin.panels = () => [{ lists: [{ id: "L", name: "Inbox", tasks: [{ id: "3", title: "Book venue" }] }] }];
+  plugin.tasksChanged();
+  plugin.tasksChanged();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(view.dispatched.length, 1);
+  links.update({ docChanged: false, viewportChanged: false, transactions: [{ effects: [view.dispatched[0].effects] }] });
+  assert.deepStrictEqual(links.decorations.map((d) => d.value.spec.widget.id), ["3"]);
+  links.destroy();
+  assert.strictEqual(plugin.taskLinkViews.size, 0);
+  // Signed out: no tasks, no links.
+  plugin.panels = () => [];
+  plugin.tasksChanged();
+  assert.deepStrictEqual(new cls(view).decorations, []);
+});
+
+test("showing a task from a note undoes what hides it, opens its group and flashes it", async () => {
+  const plugin = await signedInPlugin();
+  const view = global.__viewFactory({});
+  const done = { id: "done", title: "Old", completed: true };
+  const open = { id: "open", title: "New", completed: false };
+  view.lists = [{ id: "L", name: "Inbox", tasks: [open, done] }];
+  view.filter = "zzz";
+  view.searchEl = { value: "zzz" };
+  plugin.settings.showCompleted = false;
+  const group = { open: false };
+  const flashes = [];
+  const row = (id) => ({
+    id,
+    closest: () => group,
+    scrollIntoView: (opts) => flashes.push(["scroll", id, opts.block]),
+    removeClass() {},
+    addClass: (cls) => flashes.push([cls, id]),
+    get offsetWidth() {
+      return 0;
+    },
+  });
+  // Stands in for the real render: which rows exist follows the filters.
+  view.renderLists = () => {
+    view.rowsById = new Map();
+    for (const task of view.lists[0].tasks) {
+      if (view.filter) continue;
+      if (task.completed && !plugin.settings.showCompleted) continue;
+      view.rowsById.set(task.id, row(task.id));
+    }
+  };
+  view.renderLists();
+  view.reveal("open");
+  assert.strictEqual(view.filter, "", "the filter that hid it is cleared");
+  assert.strictEqual(view.searchEl.value, "");
+  assert.strictEqual(plugin.settings.showCompleted, false, "nothing else changes");
+  assert.strictEqual(group.open, true, "its group opens");
+  assert.deepStrictEqual(flashes, [["scroll", "open", "center"], ["is-revealed", "open"]]);
+  view.reveal("done");
+  assert.strictEqual(plugin.settings.showCompleted, true, "completed tasks shown for a completed one");
+  global.__notices = [];
+  view.reveal("gone");
+  assert.deepStrictEqual(global.__notices, ["That task is no longer in Microsoft To Do."]);
 });
 
 test("the last lists are cached for this account and shown at once", async () => {

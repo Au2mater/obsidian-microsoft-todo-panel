@@ -36,6 +36,9 @@ class Plugin {
     };
   }
   registerEvent() {}
+  registerEditorExtension(extension) {
+    global.__editorExtension = extension;
+  }
   registerInterval(id) {
     clearInterval(id);
     return id;

@@ -19,6 +19,9 @@ const {
   requestUrl,
   setIcon,
 } = require("obsidian");
+// Obsidian's own editor modules, for the links beside task lines in notes.
+const { Decoration, ViewPlugin, WidgetType } = require("@codemirror/view");
+const { RangeSetBuilder, StateEffect } = require("@codemirror/state");
 
 const VIEW_TYPE = "microsoft-todo-panel";
 const DRAG_TYPE = "application/x-microsoft-todo-task";
@@ -101,6 +104,14 @@ module.exports = class TodoPanelPlugin extends Plugin {
       })
     );
 
+    // A link beside each note line that holds a panel task, which shows the
+    // task in the panel. A visual layer only: the note's text is untouched.
+    this.taskIndex = null;
+    this.taskIndexDirty = true;
+    this.taskShape = this.taskLineShape();
+    this.taskLinkViews = new Set();
+    this.registerEditorExtension(taskLinkExtension(this));
+
     // "Today" and overdue colours move on at midnight even if nothing else
     // happens in the panel.
     this.today = localToday();
@@ -115,6 +126,8 @@ module.exports = class TodoPanelPlugin extends Plugin {
 
   onunload() {
     window.clearTimeout(this.noteCheckTimer);
+    window.clearTimeout(this.taskLinkTimer);
+    this.taskLinkViews.clear();
     // Stops a sign-in that is still waiting for the user.
     if (this.signInModal) this.signInModal.close();
   }
@@ -144,7 +157,49 @@ module.exports = class TodoPanelPlugin extends Plugin {
   }
 
   async saveSettings() {
+    const shape = this.taskLineShape();
+    if (shape !== this.taskShape) this.tasksChanged();
+    this.taskShape = shape;
     await this.saveData(this.settings);
+  }
+
+  // The settings that decide what a task line looks like: the template and
+  // the due date format.
+  taskLineShape() {
+    return `${this.settings.template}\u0000${this.settings.dueFormat}`;
+  }
+
+  // ── links from note lines to the panel ──
+
+  // The panel's tasks changed: the links in open notes are redrawn, once,
+  // after whatever changed them has finished.
+  tasksChanged() {
+    this.taskIndexDirty = true;
+    window.clearTimeout(this.taskLinkTimer);
+    this.taskLinkTimer = window.setTimeout(() => {
+      for (const links of this.taskLinkViews) links.redraw();
+    }, 0);
+  }
+
+  // What note lines are matched against, built on first use after a change
+  // (see buildTaskIndex): the panel's tasks, or, while no open panel holds
+  // any (it is closed, or not loaded yet in a hidden sidebar tab), the last
+  // fetched ones. Null when there are none, as when signed out.
+  taskIndexNow() {
+    if (this.taskIndexDirty) {
+      this.taskIndexDirty = false;
+      const view = this.panels().find((panel) => panel.lists.length);
+      const lists = view ? view.lists : (this.loadListCache() || { lists: [] }).lists;
+      this.taskIndex = buildTaskIndex(lists, (task, list) => this.renderTask(task, list).trim());
+    }
+    return this.taskIndex;
+  }
+
+  // Clicking a link in a note: shows that task in the panel.
+  async revealTask(id) {
+    await this.openPanel();
+    const view = this.panels()[0];
+    if (view) view.reveal(id);
   }
 
   // Reads every To Do list with its open tasks (and recently completed ones)
@@ -163,6 +218,7 @@ module.exports = class TodoPanelPlugin extends Plugin {
   signOut() {
     this.auth.signOut();
     this.saveListCache(null);
+    this.tasksChanged();
     this.panels().forEach((view) => view.clear());
     this.refreshSettingTab();
     new Notice("Signed out of Microsoft.");
@@ -313,6 +369,17 @@ class TodoPanelView extends ItemView {
     this.checkedNoteKey = null;
   }
 
+  // The tasks shown. Every change redraws the links in notes, which match
+  // note lines against these tasks.
+  get lists() {
+    return this.shownLists;
+  }
+
+  set lists(lists) {
+    this.shownLists = lists;
+    this.plugin.tasksChanged();
+  }
+
   getViewType() {
     return VIEW_TYPE;
   }
@@ -331,10 +398,10 @@ class TodoPanelView extends ItemView {
     root.addClass("sb-todo-panel");
 
     const toolbar = root.createDiv({ cls: "sb-todo-toolbar" });
-    const search = toolbar.createEl("input", {
+    const search = (this.searchEl = toolbar.createEl("input", {
       type: "search",
       attr: { placeholder: "Filter tasks…" },
-    });
+    }));
     search.addEventListener("input", () => {
       // A filter opens every group with a match, using its own collapsed
       // state, so clearing it brings the groups back as they were.
@@ -438,6 +505,54 @@ class TodoPanelView extends ItemView {
     this.error = null;
     this.checkedNoteKey = null;
     this.renderLists();
+  }
+
+  // The links in notes fall back to the last fetched tasks.
+  async onClose() {
+    this.lists = [];
+  }
+
+  // Shows one task: brings back a row that the filter or a toggle hides,
+  // opens its group, scrolls to it and flashes it.
+  reveal(id) {
+    let row = this.rowsById && this.rowsById.get(id);
+    if (!row) {
+      const list = this.lists.find((l) => l.tasks.some((t) => t.id === id));
+      if (!list) {
+        new Notice("That task is no longer in Microsoft To Do.");
+        return;
+      }
+      const task = list.tasks.find((t) => t.id === id);
+      // Undo whatever hides it, one thing at a time, least disruptive first;
+      // only what hides this task changes.
+      const s = this.plugin.settings;
+      let settingsChanged = false;
+      const undo = [
+        () => this.filter && !this.matches(task, list) && ((this.filter = ""), this.searchEl && (this.searchEl.value = ""), true),
+        () => task.completed && !s.showCompleted && ((s.showCompleted = true), (settingsChanged = true)),
+        () => s.onlyInNote && ((s.onlyInNote = false), (settingsChanged = true)),
+      ];
+      for (const step of undo) {
+        if (!step()) continue;
+        this.renderLists();
+        row = this.rowsById.get(id);
+        if (row) break;
+      }
+      if (settingsChanged) {
+        this.plugin.saveSettings();
+        // The toggles are shared: other panels show the change too.
+        for (const other of this.plugin.panels()) if (other !== this) other.renderLists();
+      }
+      if (!row) return;
+    }
+    const group = row.closest("details");
+    // Opened as if by hand, so it stays open.
+    if (group && !group.open) group.open = true;
+    row.scrollIntoView({ block: "center" });
+    row.removeClass("is-revealed");
+    // Restarts the flash when the same task is shown twice in a row.
+    void row.offsetWidth;
+    row.addClass("is-revealed");
   }
 
   renderStatus() {
@@ -550,6 +665,7 @@ class TodoPanelView extends ItemView {
     this.renderStatus();
     if (!this.listsEl) return;
     this.listsEl.empty();
+    this.rowsById = new Map();
     if (this.completedEl) {
       const on = this.plugin.settings.showCompleted;
       const days = Number(this.plugin.settings.completedDays) || 0;
@@ -667,6 +783,7 @@ class TodoPanelView extends ItemView {
       this.plugin.addToNote(task, list).catch((e) => new Notice(`Could not add the task: ${e.message}`));
     });
     row.sbEntry = { task, list };
+    this.rowsById.set(task.id, row);
     this.markNoteMatch(row);
 
     row.addEventListener("dragstart", (evt) => {
@@ -929,6 +1046,9 @@ class TodoPanelSettingTab extends PluginSettingTab {
   }
 }
 
+// A list item, with its checkbox mark (if any) and its text.
+const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s+(?:\[(.)\]\s+)?(.*)$/;
+
 // The task-like lines of a note: each raw trimmed line, and each list item's
 // text reduced by normalizeText, mapped to whether any such line is checked.
 // Only [x] or [X] counts as checked; [<], [>], [-] and other marks do not.
@@ -940,7 +1060,7 @@ function noteTaskLines(text) {
     const trimmed = line.trim();
     if (!trimmed) return;
     if (!raw.has(trimmed)) raw.set(trimmed, index);
-    const item = trimmed.match(/^(?:[-*+]|\d+[.)])\s+(?:\[(.)\]\s+)?(.*)$/);
+    const item = trimmed.match(LIST_ITEM);
     if (!item) return;
     const key = normalizeText(item[2]);
     const checked = item[1] === "x" || item[1] === "X";
@@ -948,6 +1068,140 @@ function noteTaskLines(text) {
     titles.set(key, { checked: Boolean(seen && seen.checked) || checked, line: seen ? seen.line : index });
   });
   return { raw, titles };
+}
+
+// The panel's tasks keyed like note lines, for the links in notes: each task's
+// normalized title and its rendered line, mapped to the task's ID. When two
+// tasks share a title, an open one wins over a completed one.
+function buildTaskIndex(lists, render) {
+  const titles = new Map();
+  const raw = new Map();
+  const completed = new Set();
+  for (const list of lists) {
+    for (const task of list.tasks) {
+      const title = normalizedTitle(task);
+      if (title && (!titles.has(title) || (completed.has(titles.get(title)) && !task.completed))) titles.set(title, task.id);
+      const line = render(task, list);
+      if (line && (!raw.has(line) || (completed.has(raw.get(line)) && !task.completed))) raw.set(line, task.id);
+      if (task.completed) completed.add(task.id);
+    }
+  }
+  return titles.size || raw.size ? { titles, raw } : null;
+}
+
+// Longer lines are never task lines, and are not worth normalizing.
+const MAX_TASK_LINE = 1000;
+
+// The ID of the task a note line holds, or null: the same matching as the
+// "in note" markers, for one line.
+function taskIdForLine(index, text) {
+  if (!text || text.length > MAX_TASK_LINE) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const item = trimmed.match(LIST_ITEM);
+  const id = item && index.titles.get(normalizeText(item[2]));
+  return id || index.raw.get(trimmed) || null;
+}
+
+// The editor side of the links: a small button at the end of each line that
+// holds a panel task. Only the lines on screen are looked at, and only when
+// the text, the visible part or the tasks change; moving the cursor costs
+// nothing. Each distinct line text is looked up once, so scrolling back and
+// typing elsewhere reuse earlier answers.
+function taskLinkExtension(plugin) {
+  const redrawEffect = StateEffect.define();
+  const decorations = new Map(); // line text → decoration or null
+  let cachedIndex = null;
+
+  class TaskLinkWidget extends WidgetType {
+    constructor(id) {
+      super();
+      this.id = id;
+    }
+    eq(other) {
+      return other.id === this.id;
+    }
+    toDOM() {
+      const el = document.createElement("span");
+      el.className = "sb-todo-reveal";
+      el.setAttribute("role", "button");
+      el.setAttribute("aria-label", "Show in To Do panel");
+      // Keeps the cursor and focus where they are.
+      el.addEventListener("mousedown", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+      });
+      el.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        plugin.revealTask(this.id).catch((e) => new Notice(`Could not show the task: ${e.message}`));
+      });
+      return el;
+    }
+    // The editor leaves clicks on the button alone.
+    ignoreEvent() {
+      return true;
+    }
+  }
+
+  const decorationFor = (index, text) => {
+    if (index !== cachedIndex || decorations.size > 2000) {
+      decorations.clear();
+      cachedIndex = index;
+    }
+    let deco = decorations.get(text);
+    if (deco === undefined) {
+      const id = taskIdForLine(index, text);
+      deco = id ? Decoration.widget({ widget: new TaskLinkWidget(id), side: 1 }) : null;
+      decorations.set(text, deco);
+    }
+    return deco;
+  };
+
+  return ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+        this.decorations = this.build();
+        plugin.taskLinkViews.add(this);
+      }
+      update(update) {
+        if (update.docChanged || update.viewportChanged || update.transactions.some((tr) => tr.effects.some((e) => e.is(redrawEffect)))) {
+          this.decorations = this.build();
+        }
+      }
+      redraw() {
+        this.view.dispatch({ effects: redrawEffect.of(null) });
+      }
+      destroy() {
+        plugin.taskLinkViews.delete(this);
+      }
+      build() {
+        const index = plugin.taskIndexNow();
+        if (!index) return Decoration.none;
+        const doc = this.view.state.doc;
+        const builder = new RangeSetBuilder();
+        let last = 0;
+        for (const { from, to } of this.view.visibleRanges) {
+          let line = doc.lineAt(from);
+          // Ranges can share a line; each line is decorated once, in order.
+          if (line.number <= last) {
+            if (last >= doc.lines) break;
+            line = doc.line(last + 1);
+          }
+          while (line.from <= to) {
+            const deco = decorationFor(index, line.text);
+            if (deco) builder.add(line.to, line.to, deco);
+            last = line.number;
+            if (line.number === doc.lines) break;
+            line = doc.line(line.number + 1);
+          }
+        }
+        return builder.finish();
+      }
+    },
+    { decorations: (links) => links.decorations }
+  );
 }
 
 // The line of the note that holds this task, or -1. Same matching as the

@@ -24,6 +24,11 @@ drag starts in this panel instead.
   the checkbox, and trailing emojis, dates and links. Each group's title
   shows how many of its tasks the note holds, such as `○2 ✓1`, open or
   collapsed.
+- In a note, a small icon at the end of each line that holds one of your
+  tasks shows that task in the panel: its group opens, the panel scrolls to
+  it and it flashes. A filter or toggle that hides it is turned off. The icon
+  is drawn by the editor and never written into the note; it appears in
+  editing and live preview, not in reading view.
 - A compact toggle shows only the tasks the active note holds, and follows
   you as you switch notes.
 - A compact toggle shows recently completed tasks, struck through, after the
