@@ -87,8 +87,11 @@ takes about five minutes and keeps your tasks between you and Microsoft.
    - your directory (tenant) ID for an app limited to your organisation;
    - `consumers` for personal accounts only;
    - `common` for an app that accepts both work and personal accounts.
-4. Select **Sign in**. A dialog shows a short code. Open the Microsoft page,
+4. Select **Sign in**. The dialog shows the client ID and tenant to check;
+   select **Continue** and it shows a short code. Open the Microsoft page,
    enter the code and sign in. The dialog closes by itself and the panel fills.
+   Clicking outside the dialog does not close it, so you can switch to the
+   browser and back; press Escape to close it.
 
 Open the panel from the ribbon icon or with the command **Microsoft To Do Panel: Open panel**.
 
