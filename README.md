@@ -24,6 +24,10 @@ drag starts in this panel instead.
   - `due-date:` takes `today`, `tomorrow`, `overdue`, `upcoming`, `none` or a
     date or the start of one (`2026-11-20`, `2026-11`).
   - `is:` takes `open`, `completed` or `important`.
+  - `{{title}}` stands for the active note's name, as in Obsidian's
+    templates, and follows you from note to note: `list:{{title}}` shows the
+    list named after the note, `{{title}}` alone any task that mentions it.
+    With no note open it matches nothing.
   - `"quoted phrases"` match as a whole, `-` excludes a term (`-list:work`),
     and `OR` in capitals matches either side (`milk OR bread`); terms without
     OR must all match.

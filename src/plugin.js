@@ -37,14 +37,18 @@ const LIST_CACHE_KEY = "microsoft-todo-panel-lists";
 // Recent searches, newest first, on this device like Obsidian's own.
 const SEARCH_HISTORY_KEY = "microsoft-todo-panel-search-history";
 const SEARCH_HISTORY_MAX = 10;
+// Stands for the active note's name in a search, as {{title}} does in
+// Obsidian's templates: "list:{{title}}" finds the list named after the note.
+const TITLE_PLACEHOLDER = "{{title}}";
 // The search left in the box, so it is still there after a restart.
 const SEARCH_KEY = "microsoft-todo-panel-search";
 // The search box's operators, offered in its menu as Obsidian's search offers
 // path:, file: and tag:. Those with values offer them once typed.
+// `takesTitle` marks those that also offer TITLE_PLACEHOLDER as a value.
 const SEARCH_OPERATORS = [
-  { op: "title:", info: "match the task's title" },
-  { op: "note:", info: "match the task's notes" },
-  { op: "list:", info: "match the list's name" },
+  { op: "title:", info: "match the task's title", takesTitle: true },
+  { op: "note:", info: "match the task's notes", takesTitle: true },
+  { op: "list:", info: "match the list's name", takesTitle: true },
   {
     op: "due-date:",
     info: "today, overdue, none or a date",
@@ -486,6 +490,7 @@ class TodoPanelView extends ItemView {
     this.searchMenu = new SearchMenu(search, {
       history: () => this.plugin.searchHistory(),
       clearHistory: () => this.plugin.clearSearchHistory(),
+      noteName: () => this.noteName,
       apply,
     });
     // The search left in the box last time, until it is cleared.
@@ -969,7 +974,9 @@ class TodoPanelView extends ItemView {
     if (key === this.checkedNoteKey) return;
     this.checkedNoteKey = key;
     this.noteLines = note ? noteTaskLines(note.text) : null;
-    this.noteName = note && note.file ? note.file.basename : "";
+    const noteName = note && note.file ? note.file.basename : "";
+    const renamed = noteName !== this.noteName;
+    this.noteName = noteName;
     const refDate = (note && this.plugin.dailyNoteDate(note.file)) || null;
     if (refDate !== this.refDate) {
       this.refDate = refDate;
@@ -978,6 +985,8 @@ class TodoPanelView extends ItemView {
       if (this.tab === "dates") return this.renderLists();
     }
     if (!this.listsEl) return;
+    // A search for {{title}} now means another note.
+    if (renamed && this.filter.toLowerCase().includes(TITLE_PLACEHOLDER)) return this.renderLists();
     // Showing only the note's tasks: rebuild when that set of tasks changed.
     if (this.plugin.settings.onlyInNote && this.inNoteIds() !== this.inNoteSignature) return this.renderLists();
     for (const row of this.listsEl.querySelectorAll(".sb-todo-task")) this.markNoteMatch(row);
@@ -1037,7 +1046,7 @@ class TodoPanelView extends ItemView {
       this.parsedFilter = this.filter;
       this.searchTerms = parseSearch(this.filter);
     }
-    return taskMatches(this.searchTerms, task, list, localToday());
+    return taskMatches(this.searchTerms, task, list, localToday(), this.noteName);
   }
 }
 
@@ -1071,11 +1080,17 @@ function parseSearch(text) {
   return kept.length ? kept : [[]];
 }
 
-// Whether a task matches any of the search's alternatives.
-function taskMatches(groups, task, list, today) {
+// Whether a task matches any of the search's alternatives. `noteName` is
+// what {{title}} stands for; with no note open, a term using it matches
+// nothing (and so, negated, everything).
+function taskMatches(groups, task, list, today, noteName = "") {
   const due = task.due_date || "";
   const has = (text, value) => String(text || "").toLowerCase().includes(value);
   const test = ({ op, value }) => {
+    if (value.includes(TITLE_PLACEHOLDER)) {
+      if (!noteName) return false;
+      value = value.split(TITLE_PLACEHOLDER).join(noteName.toLowerCase());
+    }
     switch (op) {
       case "title:":
         return has(task.title, value);
@@ -1111,16 +1126,24 @@ function addDays(isoDate, days) {
 // What the search menu offers for the text before the cursor: operators
 // while a word is starting, an operator's values once it is typed, and the
 // history while the box is empty. `token` is the word being replaced.
-function searchSuggestions(before, history) {
+// `noteName` is shown beside {{title}}, as what it stands for now.
+function searchSuggestions(before, history, noteName = "") {
   const token = /\S*$/.exec(before)[0];
   const sign = token.startsWith("-") ? "-" : "";
   const word = token.slice(sign.length).toLowerCase();
   const options = [];
-  const withValue = SEARCH_OPERATORS.find((o) => o.values && word.startsWith(o.op));
+  const withValue = SEARCH_OPERATORS.find((o) => (o.values || o.takesTitle) && word.startsWith(o.op));
+  const titleInfo = noteName ? `active note: ${noteName}` : "the active note's name";
   if (withValue) {
     const typed = word.slice(withValue.op.length);
-    for (const [value, info] of withValue.values) {
+    const values = withValue.takesTitle ? [[TITLE_PLACEHOLDER, titleInfo]] : withValue.values;
+    for (const [value, info] of values) {
       if (value.startsWith(typed) && value !== typed) options.push({ text: `${sign}${withValue.op}${value} `, label: value, info });
+    }
+  } else if (word.startsWith("{")) {
+    // A bare {{title}}: the note's name anywhere in the task.
+    if (TITLE_PLACEHOLDER.startsWith(word) && word !== TITLE_PLACEHOLDER) {
+      options.push({ text: `${sign}${TITLE_PLACEHOLDER} `, label: TITLE_PLACEHOLDER, info: titleInfo });
     }
   } else if (!word.includes(":")) {
     for (const o of SEARCH_OPERATORS) {
@@ -1145,9 +1168,10 @@ function searchSuggestions(before, history) {
 // suggestion classes so it looks like the search pane's. Clicking or Enter
 // takes an item; arrows move between them; Escape closes it.
 class SearchMenu {
-  constructor(input, { history, clearHistory, apply }) {
+  constructor(input, { history, clearHistory, apply, noteName }) {
     this.input = input;
     this.history = history;
+    this.noteName = noteName;
     this.clearHistory = clearHistory;
     this.apply = apply;
     this.el = null;
@@ -1162,7 +1186,7 @@ class SearchMenu {
   update() {
     const before = this.input.value.slice(0, this.input.selectionStart ?? this.input.value.length);
     // History only while the whole box is empty, as choosing one replaces it.
-    const sections = searchSuggestions(before, this.input.value.trim() ? [] : this.history());
+    const sections = searchSuggestions(before, this.input.value.trim() ? [] : this.history(), this.noteName());
     if (!sections.length) return this.close();
     if (!this.el) {
       // The box's own window, which may be a popout.

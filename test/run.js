@@ -752,6 +752,28 @@ test("search operators, negation, phrases and OR", () => {
   assert.strictEqual(find("title:"), "abcd", "an operator with no value is ignored");
 });
 
+test("{{title}} in a search stands for the active note's name", () => {
+  const today = "2026-11-18";
+  const work = { name: "Project Phoenix" };
+  const home = { name: "Home" };
+  const tasks = [
+    { id: "a", title: "Plan Project Phoenix launch", notes: "", list: home },
+    { id: "b", title: "Write brief", notes: "", list: work },
+    { id: "c", title: "Buy milk", notes: "", list: home },
+  ];
+  const find = (q, note) =>
+    tasks.filter((t) => taskMatches(parseSearch(q), t, t.list, today, note)).map((t) => t.id).join("");
+  assert.strictEqual(find("list:{{title}}", "Project Phoenix"), "b");
+  assert.strictEqual(find("list:{{title}}", "Home"), "ac", "the same search follows the note");
+  assert.strictEqual(find("title:{{title}}", "Project Phoenix"), "a", "a name with spaces is one value");
+  assert.strictEqual(find("{{title}}", "Project Phoenix"), "ab", "bare, it matches anywhere");
+  assert.strictEqual(find("-list:{{title}}", "Project Phoenix"), "ac");
+  assert.strictEqual(find("list:{{title}} OR milk", "Project Phoenix"), "bc");
+  assert.strictEqual(find("list:{{Title}}", "Home"), "ac", "case is ignored");
+  assert.strictEqual(find("list:{{title}}", ""), "", "no note open: nothing matches");
+  assert.strictEqual(find("-list:{{title}}", ""), "abc", "and, negated, everything does");
+});
+
 test("the search left in the box survives a restart until it is cleared", async () => {
   const plugin = await signedInPlugin();
   const listeners = {};
@@ -796,6 +818,15 @@ test("the search menu offers operators, values and history as you type", () => {
   assert.deepStrictEqual(labels("milk o"), [["Search options", ["OR"]]]);
   assert.deepStrictEqual(labels("milk OR "), [["Search options", ops]], "no OR straight after OR");
   assert.deepStrictEqual(labels("milk"), [], "nothing to offer: the menu closes");
+  assert.deepStrictEqual(labels("list:"), [["Search options", ["{{title}}"]]], "text operators offer {{title}}");
+  assert.deepStrictEqual(labels("title:{{t"), [["Search options", ["{{title}}"]]]);
+  assert.deepStrictEqual(labels("list:wo"), [], "a typed value closes the menu");
+  assert.deepStrictEqual(labels("{"), [["Search options", ["{{title}}"]]], "and on its own");
+  assert.deepStrictEqual(labels("list:{{title}}"), [], "nothing once typed");
+  const [title] = searchSuggestions("-list:", [], "Project Phoenix")[0].items;
+  assert.strictEqual(title.text, "-list:{{title}} ");
+  assert.strictEqual(title.info, "active note: Project Phoenix", "it says what it stands for now");
+  assert.strictEqual(searchSuggestions("list:", [])[0].items[0].info, "the active note's name");
   const [value] = searchSuggestions("-due-date:ov", [])[0].items;
   assert.strictEqual(value.text, "-due-date:overdue ", "the sign is kept");
 });
