@@ -34,6 +34,38 @@ const SESSION_SECRET_PREFIX = "todo-panel-microsoft-session";
 // The last fetched lists, in this vault's local storage on this device, so the
 // panel can show them at once on startup while it refreshes.
 const LIST_CACHE_KEY = "microsoft-todo-panel-lists";
+// Recent searches, newest first, on this device like Obsidian's own.
+const SEARCH_HISTORY_KEY = "microsoft-todo-panel-search-history";
+const SEARCH_HISTORY_MAX = 10;
+// The search left in the box, so it is still there after a restart.
+const SEARCH_KEY = "microsoft-todo-panel-search";
+// The search box's operators, offered in its menu as Obsidian's search offers
+// path:, file: and tag:. Those with values offer them once typed.
+const SEARCH_OPERATORS = [
+  { op: "title:", info: "match the task's title" },
+  { op: "note:", info: "match the task's notes" },
+  { op: "list:", info: "match the list's name" },
+  {
+    op: "due-date:",
+    info: "today, overdue, none or a date",
+    values: [
+      ["today", "due today"],
+      ["tomorrow", "due tomorrow"],
+      ["overdue", "due before today"],
+      ["upcoming", "due after today"],
+      ["none", "no due date"],
+    ],
+  },
+  {
+    op: "is:",
+    info: "open, completed or important",
+    values: [
+      ["open", "not completed"],
+      ["completed", "completed tasks, when shown"],
+      ["important", "flagged as important"],
+    ],
+  },
+];
 
 const DEFAULT_SETTINGS = {
   // Microsoft sign-in. There is no shared app registration: each user
@@ -241,6 +273,40 @@ module.exports = class TodoPanelPlugin extends Plugin {
 
   // ── list cache ──
 
+  // Recent searches, newest first, shared by every panel in this vault.
+  searchHistory() {
+    try {
+      const saved = this.app.loadLocalStorage(SEARCH_HISTORY_KEY);
+      return Array.isArray(saved) ? saved.filter((q) => typeof q === "string") : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  rememberSearch(query) {
+    query = String(query || "").trim();
+    if (!query) return;
+    const history = [query, ...this.searchHistory().filter((q) => q !== query)].slice(0, SEARCH_HISTORY_MAX);
+    this.app.saveLocalStorage(SEARCH_HISTORY_KEY, history);
+  }
+
+  savedSearch() {
+    try {
+      const saved = this.app.loadLocalStorage(SEARCH_KEY);
+      return typeof saved === "string" ? saved : "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  saveSearch(query) {
+    this.app.saveLocalStorage(SEARCH_KEY, query || null);
+  }
+
+  clearSearchHistory() {
+    this.app.saveLocalStorage(SEARCH_HISTORY_KEY, null);
+  }
+
   loadListCache() {
     try {
       const cached = this.app.loadLocalStorage(LIST_CACHE_KEY);
@@ -402,14 +468,50 @@ class TodoPanelView extends ItemView {
     const toolbar = root.createDiv({ cls: "sb-todo-toolbar" });
     const search = (this.searchEl = toolbar.createEl("input", {
       type: "search",
-      attr: { placeholder: "Filter tasks…" },
+      attr: { placeholder: "Search..." },
     }));
+    // A search opens every group with a match, using its own collapsed
+    // state, so clearing it brings the groups back as they were.
+    const apply = (remember = false) => {
+      // Case is kept for OR; the terms themselves ignore it.
+      const filter = search.value.trim();
+      if (filter !== this.filter) {
+        this.filter = filter;
+        this.filterCollapsed = new Set();
+        this.plugin.saveSearch(filter);
+        this.renderLists();
+      }
+      if (remember) this.plugin.rememberSearch(search.value);
+    };
+    this.searchMenu = new SearchMenu(search, {
+      history: () => this.plugin.searchHistory(),
+      clearHistory: () => this.plugin.clearSearchHistory(),
+      apply,
+    });
+    // The search left in the box last time, until it is cleared.
+    search.value = this.filter = this.plugin.savedSearch();
     search.addEventListener("input", () => {
-      // A filter opens every group with a match, using its own collapsed
-      // state, so clearing it brings the groups back as they were.
-      this.filter = search.value.trim().toLowerCase();
-      this.filterCollapsed = new Set();
-      this.renderLists();
+      apply();
+      this.searchMenu.update();
+    });
+    search.addEventListener("focus", () => this.searchMenu.update());
+    // A click in a box already focused, say after Escape, opens it again.
+    // Moving the cursor also changes the word the menu would replace.
+    search.addEventListener("click", () => this.searchMenu.update());
+    search.addEventListener("keyup", (evt) => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(evt.key)) this.searchMenu.update();
+    });
+    search.addEventListener("keydown", (evt) => {
+      if (this.searchMenu.onKeyDown(evt)) return;
+      if (evt.key === "Enter") {
+        apply(true);
+        this.searchMenu.close();
+      }
+    });
+    // Leaving the box keeps what was searched for, as Obsidian does.
+    search.addEventListener("blur", () => {
+      this.searchMenu.close();
+      apply(true);
     });
     this.completedEl = toolbar.createEl("button", { cls: "sb-todo-toggle" });
     this.completedEl.addEventListener("click", () => {
@@ -512,6 +614,7 @@ class TodoPanelView extends ItemView {
 
   // The links in notes fall back to the last fetched tasks.
   async onClose() {
+    if (this.searchMenu) this.searchMenu.close();
     this.lists = [];
   }
 
@@ -533,7 +636,7 @@ class TodoPanelView extends ItemView {
       const s = this.plugin.settings;
       let settingsChanged = false;
       const undo = [
-        () => this.filter && !this.matches(task, list) && ((this.filter = ""), this.searchEl && (this.searchEl.value = ""), true),
+        () => this.filter && !this.matches(task, list) && ((this.filter = ""), this.searchEl && (this.searchEl.value = ""), this.plugin.saveSearch(""), true),
         () => task.completed && !s.showCompleted && ((s.showCompleted = true), (settingsChanged = true)),
         () => s.onlyInNote && ((s.onlyInNote = false), (settingsChanged = true)),
       ];
@@ -722,7 +825,7 @@ class TodoPanelView extends ItemView {
       const text = !this.noteLines
         ? "Open a note to see the tasks it holds."
         : this.filter
-          ? "No task in this note matches the filter."
+          ? "No task in this note matches the search."
           : this.inNoteIds()
             ? "This note's tasks are all completed; show completed tasks to see them."
             : "None of your tasks are in this note yet.";
@@ -930,8 +1033,236 @@ class TodoPanelView extends ItemView {
 
   matches(task, list) {
     if (!this.filter) return true;
-    const haystack = `${task.title} ${task.notes || ""} ${list.name}`.toLowerCase();
-    return this.filter.split(/\s+/).every((word) => haystack.includes(word));
+    if (this.parsedFilter !== this.filter) {
+      this.parsedFilter = this.filter;
+      this.searchTerms = parseSearch(this.filter);
+    }
+    return taskMatches(this.searchTerms, task, list, localToday());
+  }
+}
+
+// ── Search ───────────────────────────────────────────────────────────────────
+
+// Splits a search into alternatives at each OR (in capitals, as in Obsidian),
+// each a list of terms that must all match: plain words, "quoted phrases",
+// operator:value pairs (value quoted or not), each negated by a leading "-".
+// An unknown operator is just a word, so "http://x" still finds itself.
+function parseSearch(text) {
+  const groups = [[]];
+  const tokens = String(text).match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
+  for (const token of tokens) {
+    if (token === "OR") {
+      groups.push([]);
+      continue;
+    }
+    const terms = groups[groups.length - 1];
+    let rest = token;
+    // A lone "-" is a term not yet typed, so it matches nothing yet.
+    const negated = rest.startsWith("-");
+    if (negated) rest = rest.slice(1);
+    const m = /^([a-z-]+:)(.*)$/i.exec(rest);
+    const known = m && SEARCH_OPERATORS.some((o) => o.op === m[1].toLowerCase());
+    const op = known ? m[1].toLowerCase() : null;
+    const value = (known ? m[2] : rest).replace(/"/g, "").toLowerCase();
+    if (value) terms.push({ op, value, negated });
+  }
+  // A dangling OR ("milk OR") adds nothing rather than matching everything.
+  const kept = groups.filter((g) => g.length);
+  return kept.length ? kept : [[]];
+}
+
+// Whether a task matches any of the search's alternatives.
+function taskMatches(groups, task, list, today) {
+  const due = task.due_date || "";
+  const has = (text, value) => String(text || "").toLowerCase().includes(value);
+  const test = ({ op, value }) => {
+    switch (op) {
+      case "title:":
+        return has(task.title, value);
+      case "note:":
+        return has(task.notes, value);
+      case "list:":
+        return has(list.name, value);
+      case "due-date:":
+        if (value === "today") return due === today;
+        if (value === "tomorrow") return due === addDays(today, 1);
+        if (value === "overdue") return !!due && due < today && !task.completed;
+        if (value === "upcoming") return due > today;
+        if (value === "none") return !due;
+        // A date, or the start of one: 2026-11 is any day in November.
+        return !!due && due.startsWith(value);
+      case "is:":
+        if (value === "open") return !task.completed;
+        if (value === "completed" || value === "done") return !!task.completed;
+        if (value === "important") return task.importance === "high";
+        return false;
+      default:
+        return has(`${task.title} ${task.notes || ""} ${list.name}`, value);
+    }
+  };
+  return groups.some((terms) => terms.every((term) => test(term) !== term.negated));
+}
+
+function addDays(isoDate, days) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return isoDay(new Date(year, month - 1, day + days));
+}
+
+// What the search menu offers for the text before the cursor: operators
+// while a word is starting, an operator's values once it is typed, and the
+// history while the box is empty. `token` is the word being replaced.
+function searchSuggestions(before, history) {
+  const token = /\S*$/.exec(before)[0];
+  const sign = token.startsWith("-") ? "-" : "";
+  const word = token.slice(sign.length).toLowerCase();
+  const options = [];
+  const withValue = SEARCH_OPERATORS.find((o) => o.values && word.startsWith(o.op));
+  if (withValue) {
+    const typed = word.slice(withValue.op.length);
+    for (const [value, info] of withValue.values) {
+      if (value.startsWith(typed) && value !== typed) options.push({ text: `${sign}${withValue.op}${value} `, label: value, info });
+    }
+  } else if (!word.includes(":")) {
+    for (const o of SEARCH_OPERATORS) {
+      if (o.op.startsWith(word)) options.push({ text: sign + o.op, label: o.op, info: o.info });
+    }
+    // Between terms, the two ways to combine them.
+    const prior = before.slice(0, before.length - token.length);
+    if (!sign && /\S\s+$/.test(prior) && !/(^|\s)OR\s+$/.test(prior)) {
+      if ("or".startsWith(word)) options.push({ text: "OR ", label: "OR", info: "match either side" });
+      if (!word) options.push({ text: "-", label: "-", info: "exclude the next term" });
+    }
+  }
+  const sections = [];
+  if (options.length) sections.push({ title: "Search options", items: options, token });
+  if (!before.trim() && history.length) {
+    sections.push({ title: "History", clear: true, items: history.map((q) => ({ query: q, label: q })) });
+  }
+  return sections;
+}
+
+// The menu under the search box, built from Obsidian's own search
+// suggestion classes so it looks like the search pane's. Clicking or Enter
+// takes an item; arrows move between them; Escape closes it.
+class SearchMenu {
+  constructor(input, { history, clearHistory, apply }) {
+    this.input = input;
+    this.history = history;
+    this.clearHistory = clearHistory;
+    this.apply = apply;
+    this.el = null;
+    this.items = [];
+    this.selected = -1;
+  }
+
+  get isOpen() {
+    return !!this.el;
+  }
+
+  update() {
+    const before = this.input.value.slice(0, this.input.selectionStart ?? this.input.value.length);
+    // History only while the whole box is empty, as choosing one replaces it.
+    const sections = searchSuggestions(before, this.input.value.trim() ? [] : this.history());
+    if (!sections.length) return this.close();
+    if (!this.el) {
+      // The box's own window, which may be a popout.
+      this.el = (this.input.doc || document).body.createDiv({ cls: "suggestion-container mod-search-suggestion sb-todo-search-menu" });
+      // Keeps the focus in the search box while an item is clicked.
+      this.el.addEventListener("mousedown", (evt) => evt.preventDefault());
+    }
+    this.el.empty();
+    const list = this.el.createDiv({ cls: "suggestion" });
+    this.items = [];
+    for (const section of sections) {
+      const group = list.createDiv({ cls: "suggestion-item mod-complex search-suggest-item mod-group" });
+      group.createDiv({ cls: "suggestion-content" })
+        .createDiv({ cls: "suggestion-title list-item-part mod-extended" })
+        .createSpan({ text: section.title });
+      const aux = group.createDiv({ cls: "suggestion-aux" });
+      if (section.clear) {
+        const clear = aux.createDiv({
+          cls: "list-item-part search-suggest-icon clickable-icon",
+          attr: { "aria-label": "Clear search history" },
+        });
+        setIcon(clear, "x");
+        clear.addEventListener("click", () => {
+          this.clearHistory();
+          this.update();
+        });
+      }
+      for (const item of section.items) {
+        const el = list.createDiv({ cls: "suggestion-item mod-complex search-suggest-item" });
+        const title = el.createDiv({ cls: "suggestion-content" }).createDiv({ cls: "suggestion-title" });
+        title.createSpan({ text: item.label });
+        if (item.info) title.createSpan({ cls: "search-suggest-info-text", text: item.info });
+        el.createDiv({ cls: "suggestion-aux" });
+        const index = this.items.length;
+        this.items.push({ ...item, token: section.token, el });
+        el.addEventListener("mousemove", () => this.select(index));
+        el.addEventListener("click", () => this.choose(index));
+      }
+    }
+    // Nothing is picked until the arrows pick it, so Enter keeps the search.
+    this.selected = -1;
+    this.position();
+  }
+
+  position() {
+    const rect = this.input.getBoundingClientRect();
+    const width = Math.max(rect.width, 260);
+    const left = Math.max(8, Math.min(rect.left, (this.input.win || window).innerWidth - width - 8));
+    this.el.style.width = `${width}px`;
+    this.el.style.left = `${left}px`;
+    this.el.style.top = `${rect.bottom + 4}px`;
+  }
+
+  select(index) {
+    if (!this.items.length) return;
+    this.selected = index < 0 ? this.items.length - 1 : index % this.items.length;
+    this.items.forEach((item, i) => item.el.toggleClass("is-selected", i === this.selected));
+    this.items[this.selected].el.scrollIntoView({ block: "nearest" });
+  }
+
+  choose(index) {
+    const item = this.items[index];
+    if (!item) return;
+    const input = this.input;
+    if (item.query !== undefined) {
+      input.value = item.query;
+      input.setSelectionRange(item.query.length, item.query.length);
+    } else {
+      // Replaces the word being typed, keeping whatever follows the cursor.
+      const end = input.selectionStart ?? input.value.length;
+      const start = end - item.token.length;
+      input.value = input.value.slice(0, start) + item.text + input.value.slice(end);
+      const cursor = start + item.text.length;
+      input.setSelectionRange(cursor, cursor);
+    }
+    this.apply(item.query !== undefined);
+    this.update();
+  }
+
+  // The search box's keys; true when the menu used the key.
+  onKeyDown(evt) {
+    if (!this.el) return false;
+    if (evt.key === "ArrowDown" || evt.key === "ArrowUp") {
+      this.select(this.selected + (evt.key === "ArrowDown" ? 1 : -1));
+    } else if (evt.key === "Enter" && this.selected >= 0) {
+      this.choose(this.selected);
+    } else if (evt.key === "Escape") {
+      this.close();
+    } else {
+      return false;
+    }
+    evt.preventDefault();
+    return true;
+  }
+
+  close() {
+    if (this.el) this.el.remove();
+    this.el = null;
+    this.items = [];
+    this.selected = -1;
   }
 }
 
@@ -1279,9 +1610,13 @@ function fill(template, values) {
 }
 
 function localToday() {
-  const now = new Date();
+  return isoDay(new Date());
+}
+
+// A local date as YYYY-MM-DD.
+function isoDay(date) {
   const pad = (n) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function longDate(isoDate) {

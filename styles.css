@@ -30,6 +30,14 @@
   min-width: 0;
 }
 
+/* The search box's menu: Obsidian's search suggestion look, placed under
+   the box from code. */
+.sb-todo-search-menu {
+  position: fixed;
+  display: flex;
+  max-height: 60vh;
+}
+
 .sb-todo-status {
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);

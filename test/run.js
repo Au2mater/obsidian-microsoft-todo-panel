@@ -19,13 +19,13 @@ Module._resolveFilename = function (request, ...rest) {
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine } =
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions } =
   TodoPanelPlugin.__internals;
 
 global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout: (id) => id && clearImmediate(id), setInterval, clearInterval };
@@ -711,6 +711,93 @@ test("note matching ignores case, indentation, whitespace and trailing emojis, d
   assert.strictEqual(state("Forwarded task"), "open", "[>] is not checked");
   assert.strictEqual(state("Release 2026 roadmap"), "open", "a year inside the title stays");
   assert.strictEqual(state("Send"), null, "no partial matches");
+});
+
+test("search operators, negation, phrases and OR", () => {
+  const today = "2026-11-18";
+  const list = { name: "Work" };
+  const tasks = [
+    { id: "a", title: "Buy milk", notes: "Two litres", due_date: "2026-11-18", importance: "high", completed: false },
+    { id: "b", title: "Send report", notes: "", due_date: "2026-11-17", completed: false },
+    { id: "c", title: "Book venue", notes: "milk bar", due_date: null, completed: true },
+    { id: "d", title: "Call Bob", notes: "", due_date: "2026-11-19", completed: false },
+  ];
+  const find = (q) => tasks.filter((t) => taskMatches(parseSearch(q), t, list, today)).map((t) => t.id).join("");
+  assert.strictEqual(find("milk"), "ac", "words match title, notes and list");
+  assert.strictEqual(find("work"), "abcd");
+  assert.strictEqual(find("title:milk"), "a");
+  assert.strictEqual(find("note:milk"), "c");
+  assert.strictEqual(find("-milk"), "bd");
+  assert.strictEqual(find("-title:milk"), "bcd");
+  assert.strictEqual(find("milk -"), "ac", "a lone - waits for its term");
+  assert.strictEqual(find('"buy milk"'), "a");
+  assert.strictEqual(find('note:"milk bar"'), "c");
+  assert.strictEqual(find('"milk bar"'), "c", "a phrase is not split");
+  assert.strictEqual(find("due-date:today"), "a");
+  assert.strictEqual(find("due-date:tomorrow"), "d");
+  assert.strictEqual(find("due-date:overdue"), "b");
+  assert.strictEqual(find("due-date:upcoming"), "d");
+  assert.strictEqual(find("due-date:none"), "c");
+  assert.strictEqual(find("due-date:2026-11"), "abd");
+  assert.strictEqual(find("is:important"), "a");
+  assert.strictEqual(find("is:completed"), "c");
+  assert.strictEqual(find("-is:completed"), "abd");
+  assert.strictEqual(find("milk OR bob"), "acd");
+  assert.strictEqual(find("title:milk OR due-date:overdue"), "ab");
+  assert.strictEqual(find("milk -note:bar OR bob"), "ad", "AND binds tighter than OR");
+  assert.strictEqual(find("milk or bob"), "", "only OR in capitals combines");
+  assert.strictEqual(find("milk OR"), "ac", "a dangling OR adds nothing");
+  assert.strictEqual(find("TITLE:MILK"), "a", "case is ignored");
+  assert.strictEqual(find("http://x"), "", "an unknown operator is a word");
+  assert.strictEqual(find("title:"), "abcd", "an operator with no value is ignored");
+});
+
+test("the search left in the box survives a restart until it is cleared", async () => {
+  const plugin = await signedInPlugin();
+  const listeners = {};
+  const input = { value: "", addEventListener: (type, fn) => (listeners[type] = fn) };
+  const el = () => ({
+    empty() {}, addClass() {}, toggleClass() {}, setAttr() {}, setText() {}, addEventListener() {},
+    querySelectorAll: () => [], createDiv: () => el(), createSpan: () => el(),
+    createEl: (tag, opts) => (opts && opts.type === "search" ? input : el()),
+  });
+  const open = async () => {
+    const view = global.__viewFactory({});
+    view.app = plugin.app;
+    view.contentEl = el();
+    view.renderLists = () => {};
+    await view.onOpen();
+    view.searchMenu.update = () => {}; // the menu needs a real DOM
+    return view;
+  };
+  let view = await open();
+  assert.strictEqual(input.value, "");
+  input.value = "milk OR bob";
+  listeners.input();
+  view = await open();
+  assert.strictEqual(input.value, "milk OR bob", "the box shows it again");
+  assert.strictEqual(view.filter, "milk OR bob", "and the tasks are filtered by it");
+  input.value = "";
+  listeners.input();
+  view = await open();
+  assert.strictEqual(view.filter, "", "a cleared search stays cleared");
+});
+
+test("the search menu offers operators, values and history as you type", () => {
+  const labels = (before, history = []) =>
+    searchSuggestions(before, history).map((s) => [s.title, s.items.map((i) => i.label)]);
+  const ops = ["title:", "note:", "list:", "due-date:", "is:"];
+  assert.deepStrictEqual(labels("", ["milk"]), [["Search options", ops], ["History", ["milk"]]]);
+  assert.deepStrictEqual(labels("", []), [["Search options", ops]], "no empty History section");
+  assert.deepStrictEqual(labels("d"), [["Search options", ["due-date:"]]]);
+  assert.deepStrictEqual(labels("-ti"), [["Search options", ["title:"]]]);
+  assert.deepStrictEqual(labels("due-date:to"), [["Search options", ["today", "tomorrow"]]]);
+  assert.deepStrictEqual(labels("milk ", ["x"]), [["Search options", [...ops, "OR", "-"]]], "history only while empty");
+  assert.deepStrictEqual(labels("milk o"), [["Search options", ["OR"]]]);
+  assert.deepStrictEqual(labels("milk OR "), [["Search options", ops]], "no OR straight after OR");
+  assert.deepStrictEqual(labels("milk"), [], "nothing to offer: the menu closes");
+  const [value] = searchSuggestions("-due-date:ov", [])[0].items;
+  assert.strictEqual(value.text, "-due-date:overdue ", "the sign is kept");
 });
 
 (async () => {

@@ -17,6 +17,16 @@ drag starts in this panel instead.
   sections are relative to that note's date, and Today is titled with the
   date instead (for example "Thu 12 Nov") unless it is today's note. The date
   is read from the file name with the **Daily note date format** setting.
+- A search box, modelled on Obsidian's search. Plain words match a task's
+  title, notes and list. Clicking the box opens a menu of search options and
+  your recent searches (kept on this device; the × clears them):
+  - `title:`, `note:` and `list:` match only that part, as in `note:invoice`.
+  - `due-date:` takes `today`, `tomorrow`, `overdue`, `upcoming`, `none` or a
+    date or the start of one (`2026-11-20`, `2026-11`).
+  - `is:` takes `open`, `completed` or `important`.
+  - `"quoted phrases"` match as a whole, `-` excludes a term (`-list:work`),
+    and `OR` in capitals matches either side (`milk OR bread`); terms without
+    OR must all match.
 - One button expands or collapses every group.
 - A task the active note already contains is marked **○ In note**, or
   **✓ In note** once a matching line is ticked with `[x]` (`[<]`, `[>]` and
