@@ -889,7 +889,7 @@ class TodoPanelView extends ItemView {
     if (task.completed) row.addClass("is-completed");
 
     const body = row.createDiv({ cls: "sb-todo-body" });
-    body.createDiv({ cls: "sb-todo-title", text: task.title });
+    appendLinkedText(body.createDiv({ cls: "sb-todo-title" }), task.title);
 
     const meta = [];
     if (task.completed) meta.push(["sb-todo-done", task.completed_date ? `Done ${shortDate(task.completed_date)}` : "Done"]);
@@ -938,11 +938,7 @@ class TodoPanelView extends ItemView {
     this.openNotes = this.openNotes || new Set();
     const toggle = metaEl.createEl("button", { cls: "sb-todo-notes-toggle", text: "Notes" });
     const notes = body.createDiv({ cls: "sb-todo-notes" });
-    // Web links in the notes are clickable and open in the browser.
-    for (const part of splitLinks(task.notes)) {
-      if (part.url) notes.createEl("a", { cls: "external-link", text: part.text, href: part.url, attr: { target: "_blank", rel: "noopener" } });
-      else notes.appendText(part.text);
-    }
+    appendLinkedText(notes, task.notes);
     const show = (open) => {
       notes.toggleClass("is-hidden", !open);
       toggle.toggleClass("is-active", open);
@@ -2122,6 +2118,20 @@ function isBareListMarker(line) {
 // Splits plain text into text and web-link parts, for showing links as links.
 // Punctuation that ends a sentence is not part of the link, and neither is a
 // closing bracket the link did not open.
+// Writes text into an element with its web links clickable, opening in the
+// browser. A click on a link only follows it, so it never also inserts or
+// shows the task, and dragging from a link drags the task, not the link.
+function appendLinkedText(el, text) {
+  for (const part of splitLinks(text)) {
+    if (!part.url) {
+      el.appendText(part.text);
+      continue;
+    }
+    const a = el.createEl("a", { cls: "external-link", text: part.text, href: part.url, attr: { target: "_blank", rel: "noopener", draggable: "false" } });
+    a.addEventListener("click", (evt) => evt.stopPropagation());
+  }
+}
+
 function splitLinks(text) {
   const parts = [];
   const pattern = /https?:\/\/[^\s<>"]+/g;

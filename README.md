@@ -6,8 +6,8 @@ not inside an existing line, indented like the line you dropped it on. Or use
 a task's **+** button to add it at the cursor: on the cursor's line if that is
 empty, otherwise on a new line below it, with the same indentation, and never
 inside the note's properties. Clicking a task the note already holds selects
-its line there. Select **Notes** under a task to read its notes; links in them
-open in your browser.
+its line there. Links in a task's title open in your browser. Select **Notes**
+under a task to read its notes; links in them open in your browser.
 
 Microsoft To Do itself does not let you drag tasks into other apps, so the
 drag starts in this panel instead.

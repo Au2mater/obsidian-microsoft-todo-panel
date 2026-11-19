@@ -343,6 +343,7 @@
   display: none;
 }
 
+.sb-todo-title a,
 .sb-todo-notes a {
   color: var(--link-external-color, var(--text-accent));
   overflow-wrap: anywhere;
