@@ -313,17 +313,28 @@
   color: var(--text-muted);
 }
 
-/* Task notes: a quiet toggle in the meta line, the text under the task. */
-.sb-todo-notes-toggle {
-  all: unset;
+/* Task notes: a quiet toggle in the meta line, the text under the task.
+   The toggle is a button, so Obsidian's button look is reset here; the
+   element selector matches the specificity of Obsidian's hover rule. */
+button.sb-todo-notes-toggle,
+button.sb-todo-notes-toggle:hover {
+  appearance: none;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-bottom: 1px dotted currentColor;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font: inherit;
+  line-height: inherit;
   cursor: pointer;
   color: var(--text-muted);
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
 }
 
-.sb-todo-notes-toggle:hover,
-.sb-todo-notes-toggle.is-active {
+button.sb-todo-notes-toggle:hover,
+button.sb-todo-notes-toggle.is-active {
   color: var(--text-normal);
 }
 
