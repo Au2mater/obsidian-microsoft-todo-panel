@@ -5,7 +5,7 @@
     "build": "node scripts/build.js",
     "test": "node test/run.js"
   },
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Obsidian plugin: drag Microsoft To Do tasks into notes from a sidebar.",
   "license": "MIT"
 }
