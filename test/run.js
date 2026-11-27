@@ -19,13 +19,13 @@ Module._resolveFilename = function (request, ...rest) {
 const mainPath = path.join(__dirname, "..", "src", "plugin.js");
 const source =
   fs.readFileSync(mainPath, "utf8") +
-  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions };\n";
+  "\nmodule.exports.__internals = { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, obsidianLink, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions };\n";
 const mod = new Module(mainPath, module);
 mod.filename = mainPath;
 mod.paths = Module._nodeModulePaths(path.dirname(mainPath));
 mod._compile(source, mainPath);
 const TodoPanelPlugin = mod.exports;
-const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions } =
+const { MicrosoftAuth, noteTaskLines, normalizeText, describeAuthError, taskFilter, placeOnOwnLine, splitLinks, obsidianLink, buildTaskIndex, taskIdForLine, parseSearch, taskMatches, searchSuggestions } =
   TodoPanelPlugin.__internals;
 
 global.window = { setTimeout: (fn) => setImmediate(fn), clearTimeout: (id) => id && clearImmediate(id), setInterval, clearInterval };
@@ -621,6 +621,17 @@ test("links in task notes are found, without trailing punctuation", () => {
   );
   assert.strictEqual(parts.map((p) => p.text).join(""), "See https://example.com/a?b=1. Also (https://x.org/y) and https://w.io/p_(1)!");
   assert.deepStrictEqual(splitLinks("no links"), [{ text: "no links" }]);
+});
+
+test("obsidian:// links in task notes are found, with the vault and note they open", () => {
+  const url = "obsidian://open?vault=Notes_2402&file=03_Resources%2Fbuilding_a_second_brain%2FWeekly%20Review";
+  const parts = splitLinks(`Review: ${url}.`);
+  assert.deepStrictEqual(parts.filter((p) => p.url).map((p) => p.url), [url]);
+  assert.deepStrictEqual(obsidianLink(url), { vault: "Notes_2402", file: "03_Resources/building_a_second_brain/Weekly Review" });
+  assert.deepStrictEqual(obsidianLink("obsidian://open?file=Note"), { vault: null, file: "Note" });
+  assert.strictEqual(obsidianLink("obsidian://open?vault=V"), null);
+  assert.strictEqual(obsidianLink("obsidian://new?vault=V&file=N"), null);
+  assert.strictEqual(obsidianLink("https://example.com/?file=x"), null);
 });
 
 test("+ never adds a task inside the note's properties", async () => {

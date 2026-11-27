@@ -889,7 +889,7 @@ class TodoPanelView extends ItemView {
     if (task.completed) row.addClass("is-completed");
 
     const body = row.createDiv({ cls: "sb-todo-body" });
-    appendLinkedText(body.createDiv({ cls: "sb-todo-title" }), task.title);
+    appendLinkedText(body.createDiv({ cls: "sb-todo-title" }), task.title, this.plugin.app);
 
     const meta = [];
     if (task.completed) meta.push(["sb-todo-done", task.completed_date ? `Done ${shortDate(task.completed_date)}` : "Done"]);
@@ -938,7 +938,7 @@ class TodoPanelView extends ItemView {
     this.openNotes = this.openNotes || new Set();
     const toggle = metaEl.createEl("button", { cls: "sb-todo-notes-toggle", text: "Notes" });
     const notes = body.createDiv({ cls: "sb-todo-notes" });
-    appendLinkedText(notes, task.notes);
+    appendLinkedText(notes, task.notes, this.plugin.app);
     const show = (open) => {
       notes.toggleClass("is-hidden", !open);
       toggle.toggleClass("is-active", open);
@@ -2115,26 +2115,52 @@ function isBareListMarker(line) {
   return /^\s*(?:[-*+]|\d+[.)])\s*(?:\[.\]\s*)?$/.test(line);
 }
 
-// Splits plain text into text and web-link parts, for showing links as links.
-// Punctuation that ends a sentence is not part of the link, and neither is a
-// closing bracket the link did not open.
-// Writes text into an element with its web links clickable, opening in the
-// browser. A click on a link only follows it, so it never also inserts or
-// shows the task, and dragging from a link drags the task, not the link.
-function appendLinkedText(el, text) {
+// Writes text into an element with its links clickable: web links open in
+// the browser, obsidian:// links open their note. A click on a link only
+// follows it, so it never also inserts or shows the task, and dragging from a
+// link drags the task, not the link.
+function appendLinkedText(el, text, app) {
   for (const part of splitLinks(text)) {
     if (!part.url) {
       el.appendText(part.text);
       continue;
     }
     const a = el.createEl("a", { cls: "external-link", text: part.text, href: part.url, attr: { target: "_blank", rel: "noopener", draggable: "false" } });
-    a.addEventListener("click", (evt) => evt.stopPropagation());
+    a.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (!part.url.startsWith("obsidian://")) return;
+      // A note in this vault opens here, like a wiki link. So does one that
+      // names another vault but exists here too: a vault synced between
+      // devices can have a different name on each. Anything else goes to
+      // Obsidian's own handler for obsidian:// links.
+      evt.preventDefault();
+      const link = obsidianLink(part.url);
+      const here = link && (link.vault === null || link.vault === app.vault.getName() || app.metadataCache.getFirstLinkpathDest(link.file, ""));
+      if (here) app.workspace.openLinkText(link.file, "", evt.ctrlKey || evt.metaKey);
+      else window.open(part.url);
+    });
   }
 }
 
+// The vault (null when not named) and note an obsidian://open link opens;
+// null for any other link.
+function obsidianLink(url) {
+  // Read by hand: Chromium does not parse hosts of custom schemes the same
+  // way in every version.
+  const match = /^obsidian:\/\/open\/?\?(.*)$/i.exec(url);
+  if (!match) return null;
+  const params = new URLSearchParams(match[1]);
+  const vault = params.get("vault");
+  const file = params.get("file");
+  return file ? { vault, file } : null;
+}
+
+// Splits plain text into text and link parts (web and obsidian:// links), for
+// showing links as links. Punctuation that ends a sentence is not part of the
+// link, and neither is a closing bracket the link did not open.
 function splitLinks(text) {
   const parts = [];
-  const pattern = /https?:\/\/[^\s<>"]+/g;
+  const pattern = /(?:https?|obsidian):\/\/[^\s<>"]+/g;
   let last = 0;
   let match;
   while ((match = pattern.exec(text || "")) !== null) {
